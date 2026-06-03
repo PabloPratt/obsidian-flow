@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Obsidian Flow</title>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    :root {
+      --bg:       #05050f;
+      --surface:  #0c0c1d;
+      --card:     #10102a;
+      --border:   #1c1c3a;
+      --accent:   #6d28d9;
+      --accent-glow: rgba(109,40,217,0.3);
+      --cyan:     #22d3ee;
+      --green:    #34d399;
+      --red:      #f87171;
+      --yellow:   #fbbf24;
+      --text:     #f1f5f9;
+      --muted:    #475569;
+      --sub:      #64748b;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+      font-size: 13px;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      height: 52px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      gap: 24px;
+      flex-shrink: 0;
+      z-index: 100;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+    .logo-gem {
+      width: 22px; height: 22px;
+      background: linear-gradient(135deg, var(--accent), var(--cyan));
+      clip-path: polygon(50% 0%, 100% 38%, 82% 100%, 18% 100%, 0% 38%);
+    }
+    .logo-text { color: var(--text); }
+    .logo-sub { color: var(--accent); font-size: 11px; font-weight: 400; }
+
+    .header-stats { display: flex; gap: 20px; }
+    .hstat { text-align: center; }
+    .hstat-val { font-size: 13px; font-weight: 600; }
+    .hstat-lbl { font-size: 10px; color: var(--muted); margin-top: 1px; }
+
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+    .clock { font-size: 12px; color: var(--sub); font-variant-numeric: tabular-nums; }
+    .market-badge {
+      padding: 3px 10px; border-radius: 20px; font-size: 10px; font-weight: 600;
+      letter-spacing: 0.5px; text-transform: uppercase;
+    }
+    .market-badge.open  { background: rgba(52,211,153,0.15); color: var(--green); border: 1px solid rgba(52,211,153,0.3); }
+    .market-badge.closed{ background: rgba(248,113,113,0.15); color: var(--red);   border: 1px solid rgba(248,113,113,0.3); }
+
+    .broker-dots { display: flex; gap: 6px; }
+    .bdot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); transition: all 0.3s; }
+    .bdot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .bdot-wrap { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    .bdot-lbl { font-size: 9px; color: var(--muted); }
+
+    /* ── Main body ── */
+    .body { display: flex; flex: 1; overflow: hidden; gap: 1px; background: var(--border); }
+
+    /* ── Left sidebar ── */
+    .sidebar {
+      width: 200px;
+      flex-shrink: 0;
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .section-title {
+      padding: 12px 14px 6px;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .ticker-item {
+      padding: 8px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+    }
+    .ticker-item:hover    { background: var(--card); border-left-color: var(--border); }
+    .ticker-item.selected { background: var(--card); border-left-color: var(--accent); }
+    .ti-sym  { font-weight: 600; font-size: 12px; }
+    .ti-right { text-align: right; }
+    .ti-price { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .ti-chg   { font-size: 10px; margin-top: 1px; }
+    .up { color: var(--green); }
+    .dn { color: var(--red); }
+
+    .crypto-section { border-top: 1px solid var(--border); margin-top: auto; }
+    .crypto-item { padding: 6px 14px; display: flex; justify-content: space-between; }
+    .ci-sym   { font-size: 11px; color: var(--sub); font-weight: 600; }
+    .ci-price { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    /* ── Center ── */
+    .center { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--surface); }
+
+    .chart-toolbar {
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .ct-sym   { font-size: 18px; font-weight: 700; }
+    .ct-price { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .ct-chg   { font-size: 12px; color: var(--sub); }
+    .tf-group { margin-left: auto; display: flex; gap: 2px; }
+    .tf-btn {
+      padding: 4px 10px; border: 1px solid var(--border); background: none;
+      color: var(--muted); border-radius: 6px; cursor: pointer; font-size: 11px;
+      font-family: inherit; transition: all 0.15s;
+    }
+    .tf-btn:hover        { border-color: var(--sub); color: var(--text); }
+    .tf-btn.active       { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
+
+    #chart-container { flex: 1; position: relative; }
+    #chart { width: 100%; height: 100%; }
+
+    /* ── Right panel ── */
+    .right { width: 320px; flex-shrink: 0; background: var(--surface); display: flex; flex-direction: column; overflow: hidden; }
+
+    .tab-bar { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    .tab-btn {
+      flex: 1; padding: 11px 4px; text-align: center; font-size: 11px; font-weight: 500;
+      color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s;
+    }
+    .tab-btn:hover  { color: var(--text); }
+    .tab-btn.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+
+    .panel { flex: 1; overflow-y: auto; padding: 12px; display: none; }
+    .panel.active { display: block; }
+
+    /* Picks cards */
+    .pick-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .pick-card:hover { border-color: var(--accent); }
+    .pick-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+    .pick-sym  { font-size: 14px; font-weight: 700; }
+    .pick-cost { font-size: 14px; font-weight: 700; color: var(--green); }
+    .pick-contract { font-size: 11px; color: var(--sub); margin-bottom: 8px; }
+    .pick-prob-wrap { display: flex; align-items: center; gap: 8px; }
+    .pick-prob-bar { flex: 1; height: 5px; background: var(--border); border-radius: 3px; overflow: hidden; }
+    .pick-prob-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), var(--cyan)); }
+    .pick-prob-pct { font-size: 12px; font-weight: 700; min-width: 36px; text-align: right; }
+    .pick-badges { display: flex; gap: 4px; margin-top: 8px; }
+    .badge {
+      padding: 2px 7px; border-radius: 4px; font-size: 9px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .badge-call   { background: rgba(52,211,153,0.15); color: var(--green); border: 1px solid rgba(52,211,153,0.2); }
+    .badge-put    { background: rgba(248,113,113,0.15); color: var(--red);   border: 1px solid rgba(248,113,113,0.2); }
+    .badge-itm    { background: rgba(34,211,238,0.15); color: var(--cyan);   border: 1px solid rgba(34,211,238,0.2); }
+    .badge-flow   { background: rgba(109,40,217,0.15); color: #a78bfa;       border: 1px solid rgba(109,40,217,0.2); }
+    .badge-eia    { background: rgba(251,191,36,0.15); color: var(--yellow);  border: 1px solid rgba(251,191,36,0.2); }
+
+    /* Flow items */
+    .flow-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      margin-bottom: 6px;
+      border-left: 3px solid var(--muted);
+    }
+    .flow-card.call { border-left-color: var(--green); }
+    .flow-card.put  { border-left-color: var(--red); }
+    .flow-row1 { display: flex; justify-content: space-between; align-items: center; }
+    .flow-sym  { font-size: 13px; font-weight: 700; }
+    .flow-prem { font-size: 13px; font-weight: 700; }
+    .flow-meta { font-size: 10px; color: var(--sub); margin-top: 4px; }
+    .flow-rule { font-size: 10px; color: var(--muted); margin-top: 3px; font-style: italic; }
+
+    /* Account */
+    .acct-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 8px; }
+    .acct-name { font-size: 11px; color: var(--sub); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .acct-stat { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .acct-stat:last-child { border-bottom: none; }
+    .acct-lbl { color: var(--muted); font-size: 11px; }
+    .acct-val { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .connect-hint { color: var(--muted); font-size: 11px; line-height: 1.7; padding: 8px 0; }
+    .connect-hint strong { color: var(--sub); }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* Loading state */
+    .loading { color: var(--muted); font-size: 12px; padding: 20px; text-align: center; }
+    @keyframes shimmer { 0%,100%{opacity:0.4} 50%{opacity:1} }
+    .loading::before { content: '◉ '; animation: shimmer 1.5s infinite; }
+
+    /* Buy button */
+    .buy-btn {
+      width: 100%; margin-top: 10px; padding: 8px;
+      background: linear-gradient(135deg, var(--accent), #4f46e5);
+      border: none; border-radius: 7px; color: #fff;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+      transition: opacity 0.15s; letter-spacing: 0.3px;
+    }
+    .buy-btn:hover { opacity: 0.85; }
+    .buy-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Order modal */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7); backdrop-filter: blur(4px);
+      z-index: 1000; align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 24px; width: 360px;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.5);
+    }
+    .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+    .modal-sub   { font-size: 11px; color: var(--sub); margin-bottom: 20px; }
+    .modal-row   { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+    .modal-row:last-of-type { border: none; }
+    .modal-lbl   { color: var(--muted); }
+    .modal-val   { font-weight: 600; }
+    .modal-input-row { margin: 16px 0; }
+    .modal-input-row label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+    .modal-input {
+      width: 100%; padding: 9px 12px;
+      background: var(--card); border: 1px solid var(--border);
+      color: var(--text); border-radius: 7px; font-size: 13px; font-family: inherit;
+    }
+    .modal-input:focus { outline: none; border-color: var(--accent); }
+    .modal-broker-row { display: flex; gap: 8px; margin: 12px 0; }
+    .broker-chip {
+      flex: 1; padding: 8px; border: 1px solid var(--border); border-radius: 7px;
+      text-align: center; cursor: pointer; font-size: 11px; font-weight: 600;
+      color: var(--muted); transition: all 0.15s;
+    }
+    .broker-chip.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
+    .modal-actions { display: flex; gap: 8px; margin-top: 20px; }
+    .btn-cancel {
+      flex: 1; padding: 10px; background: var(--card); border: 1px solid var(--border);
+      color: var(--muted); border-radius: 7px; cursor: pointer; font-size: 12px; font-family: inherit;
+    }
+    .btn-confirm {
+      flex: 2; padding: 10px;
+      background: linear-gradient(135deg, var(--accent), #4f46e5);
+      border: none; color: #fff; border-radius: 7px;
+      cursor: pointer; font-size: 12px; font-weight: 700; font-family: inherit;
+    }
+    .btn-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 10px 20px; font-size: 12px; font-weight: 500;
+      z-index: 2000; opacity: 0; transition: opacity 0.3s;
+      pointer-events: none; white-space: nowrap;
+    }
+    #toast.show { opacity: 1; }
+    #toast.success { border-color: var(--green); color: var(--green); }
+    #toast.error   { border-color: var(--red);   color: var(--red);   }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">
+    <div class="logo-gem"></div>
+    <div>
+      <div class="logo-text">Obsidian Flow</div>
+      <div class="logo-sub">Financial Intelligence Terminal</div>
+    </div>
+  </div>
+
+  <div class="header-stats">
+    <div class="hstat"><div class="hstat-val up" id="h-spy">—</div><div class="hstat-lbl">SPY</div></div>
+    <div class="hstat"><div class="hstat-val up" id="h-qqq">—</div><div class="hstat-lbl">QQQ</div></div>
+    <div class="hstat"><div class="hstat-val up" id="h-vix">—</div><div class="hstat-lbl">VIX</div></div>
+    <div class="hstat"><div class="hstat-val" id="h-btc">—</div><div class="hstat-lbl">BTC</div></div>
+  </div>
+
+  <div class="header-right">
+    <div class="clock" id="clock">—</div>
+    <div class="market-badge closed" id="mkt-badge">CLOSED</div>
+    <div class="broker-dots">
+      <div class="bdot-wrap"><div class="bdot on" title="Yahoo Finance"></div><div class="bdot-lbl">YF</div></div>
+      <div class="bdot-wrap"><div class="bdot" id="dot-alpaca" title="Alpaca"></div><div class="bdot-lbl">ALPACA</div></div>
+      <div class="bdot-wrap"><div class="bdot" id="dot-tradier" title="Tradier"></div><div class="bdot-lbl">TRADIER</div></div>
+      <div class="bdot-wrap"><div class="bdot" id="dot-coinbase" title="Coinbase"></div><div class="bdot-lbl">CB</div></div>
+      <div class="bdot-wrap"><div class="bdot" id="dot-tradovate" title="Tradovate"></div><div class="bdot-lbl">TV</div></div>
+    </div>
+  </div>
+</header>
+
+<!-- Body -->
+<div class="body">
+
+  <!-- Left: Watchlist -->
+  <div class="sidebar">
+    <div class="section-title">Watchlist</div>
+    <div id="watchlist"><div class="loading">Loading prices</div></div>
+    <div class="crypto-section">
+      <div class="section-title">Crypto</div>
+      <div id="crypto-list"></div>
+    </div>
+  </div>
+
+  <!-- Center: Chart -->
+  <div class="center">
+    <div class="chart-toolbar">
+      <span class="ct-sym" id="ct-sym">SPY</span>
+      <span class="ct-price" id="ct-price">—</span>
+      <span class="ct-chg"  id="ct-chg">—</span>
+      <div class="tf-group">
+        <button class="tf-btn active" onclick="setTF('5Min',this)">5M</button>
+        <button class="tf-btn" onclick="setTF('15Min',this)">15M</button>
+        <button class="tf-btn" onclick="setTF('1Hour',this)">1H</button>
+        <button class="tf-btn" onclick="setTF('1Day',this)">D</button>
+      </div>
+    </div>
+    <div id="chart-container">
+      <div id="chart"></div>
+    </div>
+  </div>
+
+  <!-- Right: Panels -->
+  <div class="right">
+    <div class="tab-bar">
+      <div class="tab-btn active" onclick="openTab('picks',this)">Picks</div>
+      <div class="tab-btn" onclick="openTab('options',this)">Options</div>
+      <div class="tab-btn" onclick="openTab('flow',this)">Flow</div>
+      <div class="tab-btn" onclick="openTab('intel',this)">Intel</div>
+      <div class="tab-btn" onclick="openTab('account',this)">Portfolio</div>
+    </div>
+
+    <div class="panel active" id="panel-picks">
+      <div class="loading" id="picks-loading">Scanning markets</div>
+      <div id="picks-list"></div>
+    </div>
+
+    <div class="panel" id="panel-options">
+      <!-- Filters -->
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">Max Cost / Contract</div>
+            <input id="opt-budget" type="number" value="500" placeholder="$500"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:12px;">
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">Min Probability %</div>
+            <input id="opt-minprob" type="number" value="0" placeholder="0" min="0" max="100"
+              style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:12px;">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;">
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">Expiry</div>
+            <select id="opt-expiry" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 6px;border-radius:6px;font-size:11px;">
+              <option value="">Next</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;">Sort By</div>
+            <select id="opt-sort" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:5px 6px;border-radius:6px;font-size:11px;">
+              <option value="prob">Probability</option>
+              <option value="cost">Cheapest</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:flex-end;">
+            <button onclick="loadOptions()" style="width:100%;background:var(--accent);border:none;color:#fff;padding:6px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;">Load</button>
+          </div>
+        </div>
+      </div>
+      <div id="options-list"><div class="loading">Select a ticker from the watchlist</div></div>
+    </div>
+
+    <div class="panel" id="panel-flow">
+      <div id="flow-list"><div class="loading">Loading flow alerts</div></div>
+    </div>
+
+    <div class="panel" id="panel-intel">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:1px;">Wikipedia Interest Trends (7d)</div>
+      <div id="wiki-list"><div class="loading">Loading intelligence data</div></div>
+      <div style="font-size:10px;color:var(--muted);margin:12px 0 6px;text-transform:uppercase;letter-spacing:1px;">Congressional Trades</div>
+      <div id="congress-list"><div class="loading">Loading</div></div>
+    </div>
+
+    <div class="panel" id="panel-account">
+      <div id="account-panel"><div class="loading">Loading accounts</div></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Order Modal -->
+<div class="modal-overlay" id="order-modal">
+  <div class="modal">
+    <div class="modal-title" id="modal-title">Place Order</div>
+    <div class="modal-sub"  id="modal-sub">Review your order details</div>
+
+    <div class="modal-row"><span class="modal-lbl">Contract</span><span class="modal-val" id="modal-contract">—</span></div>
+    <div class="modal-row"><span class="modal-lbl">Type</span><span class="modal-val" id="modal-type">—</span></div>
+    <div class="modal-row"><span class="modal-lbl">Strike / Expiry</span><span class="modal-val" id="modal-strike">—</span></div>
+    <div class="modal-row"><span class="modal-lbl">Ask Price</span><span class="modal-val up" id="modal-price">—</span></div>
+
+    <div class="modal-input-row">
+      <label>Number of Contracts</label>
+      <input class="modal-input" type="number" id="modal-qty" value="1" min="1" max="100">
+    </div>
+
+    <div class="modal-input-row">
+      <label>Limit Price (per share — 1 contract = 100 shares)</label>
+      <input class="modal-input" type="number" id="modal-limit" step="0.01">
+    </div>
+
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Execute via:</div>
+    <div class="modal-broker-row">
+      <div class="broker-chip selected" id="chip-alpaca" onclick="selectBroker('alpaca')">Alpaca<br><span style="font-size:9px;font-weight:400">Stocks · Options</span></div>
+      <div class="broker-chip" id="chip-coinbase" onclick="selectBroker('coinbase')">Coinbase<br><span style="font-size:9px;font-weight:400">Crypto only</span></div>
+    </div>
+
+    <div style="font-size:10px;color:var(--muted);margin-top:4px" id="modal-total">Total: —</div>
+
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn-confirm" id="modal-confirm" onclick="submitOrder()">Confirm Order →</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

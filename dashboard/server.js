@@ -1,0 +1,385 @@
+import 'dotenv/config';
+import express from 'express';
+import { WebSocketServer } from 'ws';
+import { createServer } from 'http';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import YahooFinance from 'yahoo-finance2';
+
+import * as tradier    from '../src/brokers/tradier.js';
+import * as coinbase   from '../src/brokers/coinbase.js';
+import * as tradovate  from '../src/brokers/tradovate.js';
+import * as alpaca     from '../src/brokers/alpaca.js';
+import * as quiver     from '../src/agents/quiverquant.js';
+import { fetchOptionsFlow } from '../src/agents/options-flow.js';
+import { fetchEIASignals }  from '../src/agents/eia.js';
+import { fetchFREDSignals } from '../src/agents/fred.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const yf = new YahooFinance({ suppressNotices: ['yahooSurvey','ripHistorical'] });
+
+const app    = express();
+const server = createServer(app);
+const wss    = new WebSocketServer({ server });
+
+app.use(express.static(join(__dirname, 'public')));
+app.use(express.json());
+
+// ── Black-Scholes helpers ──────────────────────────────────────────────────────
+function normCDF(x) {
+  const a=[0.254829592,-0.284496736,1.421413741,-1.453152027,1.061405429],p=0.3275911,sign=x<0?-1:1;
+  x=Math.abs(x)/Math.sqrt(2);
+  const t=1/(1+p*x),y=1-(((((a[4]*t+a[3])*t+a[2])*t+a[1])*t+a[0])*t*Math.exp(-x*x));
+  return 0.5*(1+sign*y);
+}
+function calcProb(S,K,iv,T,r=0.045) {
+  if(T<=0||iv<=0||S<=0) return {prob:0,delta:0};
+  const d1=(Math.log(S/K)+(r+0.5*iv*iv)*T)/(iv*Math.sqrt(T));
+  const d2=d1-iv*Math.sqrt(T);
+  return { prob:+(normCDF(d2)*100).toFixed(1), delta:+(normCDF(d1)*100).toFixed(1) };
+}
+
+// ── WebSocket broadcast ────────────────────────────────────────────────────────
+function broadcast(type, data) {
+  const msg = JSON.stringify({ type, data, ts: Date.now() });
+  wss.clients.forEach(c => { if (c.readyState === 1) c.send(msg); });
+}
+
+// ── Price cache ────────────────────────────────────────────────────────────────
+const priceCache = {};
+const WATCHLIST  = ['SPY','QQQ','NVDA','AMD','META','AAPL','TSLA','MSFT',
+                    'DVN','OXY','COIN','BAC','SOFI','NIO','BBAI','PLTR'];
+
+function marketSession() {
+  const et = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const h = et.getHours(), m = et.getMinutes(), day = et.getDay();
+  if (day === 0 || day === 6) return 'weekend';
+  const mins = h * 60 + m;
+  if (mins >= 240 && mins < 570)  return 'premarket';   // 4:00–9:30 AM ET
+  if (mins >= 570 && mins < 960)  return 'regular';     // 9:30 AM–4:00 PM ET
+  if (mins >= 960 && mins < 1200) return 'afterhours';  // 4:00–8:00 PM ET
+  return 'closed';
+}
+
+async function refreshPrices() {
+  try {
+    const session = marketSession();
+    const quotes = await Promise.allSettled(
+      WATCHLIST.map(async t => {
+        const q = await yf.quote(t);
+        // Use extended hours price when market is closed
+        let displayPrice = q.regularMarketPrice;
+        let displayChange = q.regularMarketChange;
+        let displayChangePct = q.regularMarketChangePercent;
+        let extendedPrice = null;
+
+        if (session === 'afterhours' && q.postMarketPrice) {
+          extendedPrice = q.postMarketPrice;
+          displayChange    = q.postMarketChange;
+          displayChangePct = q.postMarketChangePercent;
+        } else if (session === 'premarket' && q.preMarketPrice) {
+          extendedPrice = q.preMarketPrice;
+          displayChange    = q.preMarketChange;
+          displayChangePct = q.preMarketChangePercent;
+        }
+
+        return {
+          symbol:        t,
+          price:         displayPrice,
+          extendedPrice, // after/pre market price
+          session,
+          change:        displayChange,
+          changePct:     displayChangePct,
+          volume:        q.regularMarketVolume,
+          high:          q.regularMarketDayHigh,
+          low:           q.regularMarketDayLow,
+          open:          q.regularMarketOpen,
+          prevClose:     q.regularMarketPreviousClose,
+        };
+      })
+    );
+    quotes.forEach(r => {
+      if (r.status === 'fulfilled') priceCache[r.value.symbol] = r.value;
+    });
+    broadcast('prices', priceCache);
+    broadcast('session', { session });
+  } catch {}
+}
+
+// ── REST API ──────────────────────────────────────────────────────────────────
+app.get('/api/status', (req, res) => {
+  res.json({
+    brokers: {
+      tradier:   tradier.isConfigured(),
+      coinbase:  coinbase.isConfigured(),
+      tradovate: tradovate.isConfigured(),
+      alpaca:    alpaca.isConfigured(),
+    },
+    pricesReady: Object.keys(priceCache).length > 0,
+  });
+});
+
+app.get('/api/prices', (req, res) => res.json(priceCache));
+
+app.get('/api/quote/:symbol', async (req, res) => {
+  try {
+    const q = await yf.quote(req.params.symbol.toUpperCase());
+    res.json({
+      symbol:    q.symbol,
+      price:     q.regularMarketPrice,
+      change:    q.regularMarketChange,
+      changePct: q.regularMarketChangePercent,
+      volume:    q.regularMarketVolume,
+      high:      q.regularMarketDayHigh,
+      low:       q.regularMarketDayLow,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/chart/:symbol', async (req, res) => {
+  const sym = req.params.symbol.toUpperCase();
+  const tf  = req.query.tf ?? '5Min';
+  const now = new Date();
+
+  // Always use Yahoo Finance — works 24/7, pre/after hours included
+  try {
+    const yfInterval = tf === '1Day' ? '1d' : tf === '1Hour' ? '1h' : tf === '15Min' ? '15m' : '5m';
+    const lookback   = tf === '1Day' ? 90 : 2; // days back
+    const period1    = new Date(now.getTime() - lookback * 86400000);
+
+    const result = await yf.chart(sym, { period1, period2: now, interval: yfInterval });
+    const quotes = (result.quotes ?? []).filter(q => q.close != null && q.open != null);
+
+    if (!quotes.length) return res.json([]);
+
+    return res.json(quotes.map(q => ({
+      time:   Math.floor(new Date(q.date).getTime() / 1000),
+      open:   +q.open.toFixed(4),
+      high:   +q.high.toFixed(4),
+      low:    +q.low.toFixed(4),
+      close:  +q.close.toFixed(4),
+      volume: q.volume ?? 0,
+    })));
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/options/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const { expiry, budget = 25 } = req.query;
+    const livePrice = priceCache[symbol]?.price ?? (await yf.quote(symbol)).regularMarketPrice;
+    const today = new Date();
+
+    // Use Tradier if available (real greeks), else Yahoo Finance
+    if (tradier.isConfigured() && expiry) {
+      const chain = await tradier.getOptionsChain(symbol, expiry, true);
+      const calls = chain.filter(o => o.option_type === 'call' && (o.ask ?? 0) <= (budget / 100));
+      return res.json(calls.map(o => {
+        const T = Math.max((new Date(o.expiration_date) - today) / 1000 / 86400 / 365, 0.001);
+        const { prob, delta } = o.greeks?.delta
+          ? { prob: +(normCDF((Math.log(livePrice/o.strike)+(0.045-0.5*o.greeks.mid_iv*o.greeks.mid_iv)*T)/(o.greeks.mid_iv*Math.sqrt(T)))*100).toFixed(1), delta: +(o.greeks.delta*100).toFixed(1) }
+          : calcProb(livePrice, o.strike, o.greeks?.mid_iv ?? 0.4, T);
+        return {
+          symbol: o.symbol, strike: o.strike, expiry: o.expiration_date,
+          bid: o.bid, ask: o.ask, cost: Math.round(o.ask * 100),
+          volume: o.volume, oi: o.open_interest,
+          iv: o.greeks?.mid_iv ? +(o.greeks.mid_iv * 100).toFixed(0) : null,
+          delta: o.greeks?.delta ? +(o.greeks.delta * 100).toFixed(1) : delta,
+          gamma: o.greeks?.gamma, theta: o.greeks?.theta, vega: o.greeks?.vega,
+          prob, itm: livePrice > o.strike,
+          source: 'tradier',
+        };
+      }));
+    }
+
+    // Yahoo fallback
+    const base   = await yf.options(symbol);
+    const expiries = (base.expirationDates ?? []).map(d => d.toISOString().slice(0,10)).filter(d => d > today.toISOString().slice(0,10));
+    const targetExp = expiry ?? expiries[0];
+    if (!targetExp) return res.json([]);
+
+    const chain = await yf.options(symbol, { date: new Date(targetExp) });
+    const minProb  = parseFloat(req.query.minProb ?? 0);
+    const minCost  = parseFloat(req.query.minCost ?? 0);
+    const maxCost  = parseFloat(req.query.maxCost ?? budget);
+    const sortBy   = req.query.sort ?? 'prob'; // 'prob' | 'cost'
+
+    const calls = (chain.options?.[0]?.calls ?? [])
+      .filter(c => {
+        const ask = c.ask ?? 0;
+        return ask > 0.01 && ask * 100 <= maxCost && ask * 100 >= minCost && (c.volume ?? 0) > 0;
+      });
+    const T = Math.max((new Date(targetExp) - today) / 1000 / 86400 / 365, 0.001);
+
+    let mapped = calls.map(c => {
+      const { prob, delta } = calcProb(livePrice, c.strike, c.impliedVolatility ?? 0.4, T);
+      return {
+        symbol: c.contractSymbol, strike: c.strike, expiry: targetExp,
+        bid: c.bid, ask: c.ask, cost: Math.round((c.ask ?? c.lastPrice) * 100),
+        volume: c.volume ?? 0, oi: c.openInterest ?? 0,
+        iv: c.impliedVolatility ? +(c.impliedVolatility * 100).toFixed(0) : null,
+        delta, prob, itm: c.inTheMoney ?? false,
+        source: 'yahoo',
+      };
+    }).filter(c => c.prob >= minProb);
+
+    // Sort
+    mapped = sortBy === 'cost'
+      ? mapped.sort((a,b) => a.cost - b.cost)
+      : mapped.sort((a,b) => b.prob - a.prob);
+
+    res.json(mapped);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/flow', async (req, res) => {
+  try {
+    const flow = await fetchOptionsFlow({ minPremium: 250_000, limit: 20 });
+    res.json(flow.signals.slice(0, 20));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/crypto', async (req, res) => {
+  try {
+    if (coinbase.isConfigured()) {
+      const prices = await coinbase.getCryptoPrices();
+      return res.json(prices);
+    }
+    // Fallback to Yahoo Finance for crypto
+    const symbols = ['BTC-USD','ETH-USD','SOL-USD','DOGE-USD'];
+    const quotes = await Promise.allSettled(symbols.map(s => yf.quote(s)));
+    res.json(quotes.filter(r=>r.status==='fulfilled').map(r=>({
+      symbol:    r.value.symbol,
+      price:     r.value.regularMarketPrice,
+      change24h: r.value.regularMarketChangePercent,
+    })));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/macro', async (req, res) => {
+  try {
+    const [fred, eia] = await Promise.allSettled([fetchFREDSignals(), fetchEIASignals()]);
+    res.json({
+      fred: fred.status === 'fulfilled' ? fred.value : null,
+      eia:  eia.status  === 'fulfilled' ? eia.value  : null,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Order execution ────────────────────────────────────────────────────────────
+app.post('/api/order', async (req, res) => {
+  const { broker = 'alpaca', symbol, side = 'buy', qty = 1, type = 'limit', limitPrice,
+          productId, baseSize, quoteSize } = req.body;
+  try {
+    let order;
+    if (broker === 'alpaca') {
+      if (!alpaca.isConfigured()) throw new Error('Alpaca not configured — add ALPACA_API_KEY to .env');
+      order = await alpaca.placeOrder({ symbol, side, qty, type, limitPrice });
+    } else if (broker === 'coinbase') {
+      if (!coinbase.isConfigured()) throw new Error('Coinbase not configured — add COINBASE keys to .env');
+      order = await coinbase.placeOrder({ productId: productId ?? symbol, side: side.toUpperCase(), baseSize, quoteSize, type, limitPrice });
+    } else {
+      throw new Error(`Unknown broker: ${broker}. Supported: alpaca, coinbase`);
+    }
+    console.log(`[ORDER] ${broker.toUpperCase()} ${side.toUpperCase()} ${qty}x ${symbol ?? productId} → ${order.id}`);
+    res.json({ success: true, order });
+  } catch(e) {
+    console.error(`[ORDER ERROR]`, e.message);
+    res.status(400).json({ success: false, error: e.message });
+  }
+});
+
+// Available products/tradeable assets
+app.get('/api/products', async (req, res) => {
+  const result = {};
+  if (coinbase.isConfigured()) {
+    try { result.coinbase = await coinbase.getProducts('SPOT'); } catch {}
+  }
+  res.json(result);
+});
+
+// ── QuiverQuant / Wikipedia ────────────────────────────────────────────────────
+app.get('/api/congress', async (req, res) => {
+  try {
+    const { ticker } = req.query;
+    const trades = await quiver.getCongressTrades(ticker ?? null);
+    res.json(trades);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/insider/:ticker', async (req, res) => {
+  try {
+    const trades = await quiver.getInsiderTrades(req.params.ticker.toUpperCase());
+    res.json(trades);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/lobbying', async (req, res) => {
+  try {
+    const { ticker } = req.query;
+    res.json(await quiver.getLobbyingData(ticker ?? null));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/wikipedia/:ticker', async (req, res) => {
+  try {
+    const views = await quiver.getWikipediaViews(req.params.ticker.toUpperCase(), 14);
+    res.json(views ?? { error: 'No data' });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/wikipedia-batch', async (req, res) => {
+  try {
+    const tickers = (req.query.tickers ?? 'AAPL,NVDA,TSLA,META,MSFT,AMD,COIN,PLTR').split(',');
+    res.json(await quiver.getBatchWikipediaViews(tickers, 7));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/expiries/:symbol', async (req, res) => {
+  try {
+    const base = await yf.options(req.params.symbol.toUpperCase());
+    const expiries = (base.expirationDates ?? [])
+      .map(d => d.toISOString().slice(0,10))
+      .filter(d => d > new Date().toISOString().slice(0,10));
+    res.json(expiries);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/account', async (req, res) => {
+  const results = {};
+  if (alpaca.isConfigured()) {
+    try { results.alpaca = { account: await alpaca.getAccount(), positions: await alpaca.getPositions() }; } catch {}
+  }
+  if (tradovate.isConfigured()) {
+    try { results.tradovate = { account: await tradovate.getAccount(), positions: await tradovate.getPositions() }; } catch {}
+  }
+  if (coinbase.isConfigured()) {
+    try { results.coinbase = { balances: await coinbase.getBalances() }; } catch {}
+  }
+  res.json(results);
+});
+
+// ── WebSocket ──────────────────────────────────────────────────────────────────
+wss.on('connection', ws => {
+  ws.send(JSON.stringify({ type: 'prices', data: priceCache, ts: Date.now() }));
+  ws.on('message', async raw => {
+    try {
+      const { action, symbol } = JSON.parse(raw.toString());
+      if (action === 'subscribe' && symbol) {
+        const q = await yf.quote(symbol.toUpperCase());
+        ws.send(JSON.stringify({ type: 'quote', data: { symbol, price: q.regularMarketPrice, changePct: q.regularMarketChangePercent } }));
+      }
+    } catch {}
+  });
+});
+
+// ── Price refresh loop ─────────────────────────────────────────────────────────
+refreshPrices();
+setInterval(refreshPrices, 15_000); // every 15s during market hours
+
+const PORT = process.env.PORT ?? 3000;
+server.listen(PORT, () => {
+  console.log(`\n⬡  Obsidian Flow running at http://localhost:${PORT}\n`);
+});

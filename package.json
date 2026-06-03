@@ -1,0 +1,31 @@
+{
+  "name": "obsidian-flow",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "janus": "./bin/janus.js",
+    "janus-price": "./bin/price.js",
+    "janus-scan": "./bin/scan.js"
+  },
+  "scripts": {
+    "start": "node dashboard/server.js",
+    "dev": "node --watch src/index.js",
+    "sweep": "node src/index.js --sweep",
+    "price": "node src/price.js",
+    "scan": "node src/price.js scan",
+    "link": "npm link",
+    "test": "node tests/run.js",
+    "dashboard": "node dashboard/server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^16.6.1",
+    "express": "^5.2.1",
+    "lightweight-charts": "^5.0.0",
+    "node-cron": "^4.2.1",
+    "openai": "^6.41.0",
+    "ws": "^8.21.0",
+    "yahoo-finance2": "^3.15.2"
+  }
+}
