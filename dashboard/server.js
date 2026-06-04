@@ -230,20 +230,23 @@ app.get('/api/options/:symbol', async (req, res) => {
 
     let mapped = calls.map(c => {
       const { prob, delta } = calcProb(livePrice, c.strike, c.impliedVolatility ?? 0.4, T);
+      const isITM = livePrice > c.strike;
       return {
         symbol: c.contractSymbol, strike: c.strike, expiry: targetExp,
         bid: c.bid, ask: c.ask, cost: Math.round((c.ask ?? c.lastPrice) * 100),
         volume: c.volume ?? 0, oi: c.openInterest ?? 0,
         iv: c.impliedVolatility ? +(c.impliedVolatility * 100).toFixed(0) : null,
-        delta, prob, itm: c.inTheMoney ?? false,
+        delta, prob, itm: isITM,
         source: 'yahoo',
       };
-    }).filter(c => c.prob >= minProb);
-
-    // Sort
-    mapped = sortBy === 'cost'
-      ? mapped.sort((a,b) => a.cost - b.cost)
-      : mapped.sort((a,b) => b.prob - a.prob);
+    })
+    // Default to 60% if no minProb specified
+    .filter(c => c.prob >= (minProb || 60))
+    // Sort: ITM first, then by probability
+    .sort((a,b) => {
+      if (a.itm !== b.itm) return b.itm ? 1 : -1; // ITM first
+      return sortBy === 'cost' ? a.cost - b.cost : b.prob - a.prob;
+    });
 
     res.json(mapped);
   } catch(e) { res.status(500).json({ error: e.message }); }
