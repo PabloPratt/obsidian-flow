@@ -183,72 +183,67 @@ app.get('/api/chart/:symbol', async (req, res) => {
 app.get('/api/options/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
-    const { expiry, budget = 25 } = req.query;
-    const livePrice = priceCache[symbol]?.price ?? (await yf.quote(symbol)).regularMarketPrice;
-    const today = new Date();
+    const { budget = 100 } = req.query;
 
-    // Use Tradier if available (real greeks), else Yahoo Finance
-    if (tradier.isConfigured() && expiry) {
-      const chain = await tradier.getOptionsChain(symbol, expiry, true);
-      const calls = chain.filter(o => o.option_type === 'call' && (o.ask ?? 0) <= (budget / 100));
-      return res.json(calls.map(o => {
-        const T = Math.max((new Date(o.expiration_date) - today) / 1000 / 86400 / 365, 0.001);
-        const { prob, delta } = o.greeks?.delta
-          ? { prob: +(normCDF((Math.log(livePrice/o.strike)+(0.045-0.5*o.greeks.mid_iv*o.greeks.mid_iv)*T)/(o.greeks.mid_iv*Math.sqrt(T)))*100).toFixed(1), delta: +(o.greeks.delta*100).toFixed(1) }
-          : calcProb(livePrice, o.strike, o.greeks?.mid_iv ?? 0.4, T);
-        return {
-          symbol: o.symbol, strike: o.strike, expiry: o.expiration_date,
-          bid: o.bid, ask: o.ask, cost: Math.round(o.ask * 100),
-          volume: o.volume, oi: o.open_interest,
-          iv: o.greeks?.mid_iv ? +(o.greeks.mid_iv * 100).toFixed(0) : null,
-          delta: o.greeks?.delta ? +(o.greeks.delta * 100).toFixed(1) : delta,
-          gamma: o.greeks?.gamma, theta: o.greeks?.theta, vega: o.greeks?.vega,
-          prob, itm: livePrice > o.strike,
-          source: 'tradier',
-        };
-      }));
+    // Get live price
+    let livePrice;
+    try {
+      const q = await yf.quote(symbol.toUpperCase());
+      livePrice = q.regularMarketPrice;
+    } catch { return res.json([]); }
+
+    const today = new Date();
+    const maxCost = parseFloat(budget) * 100; // Convert to cents
+
+    // Get all expiration dates
+    let expiries = [];
+    try {
+      const base = await yf.options(symbol.toUpperCase());
+      expiries = (base.expirationDates ?? [])
+        .map(d => d.toISOString().slice(0,10))
+        .filter(d => d > today.toISOString().slice(0,10))
+        .slice(0, 8); // First 8 expirations
+    } catch { return res.json([]); }
+
+    if (!expiries.length) return res.json([]);
+
+    // Search across ALL expiries for best 60%+ ITM options
+    let allOptions = [];
+    for (const exp of expiries) {
+      try {
+        const chain = await yf.options(symbol.toUpperCase(), { date: new Date(exp) });
+        const calls = chain.options?.[0]?.calls ?? [];
+        const T = Math.max((new Date(exp) - today) / 1000 / 86400 / 365, 0.001);
+
+        calls
+          .filter(c => (c.ask ?? 0) > 0.01 && (c.ask ?? 0) * 100 <= maxCost && (c.volume ?? 0) > 0)
+          .forEach(c => {
+            const { prob } = calcProb(livePrice, c.strike, c.impliedVolatility ?? 0.4, T);
+            const isITM = livePrice > c.strike;
+            if (prob >= 60) { // Only 60%+ probability
+              allOptions.push({
+                ticker: symbol.toUpperCase(),
+                strike: c.strike,
+                expiry: exp,
+                ask: c.ask,
+                cost: Math.round((c.ask ?? 0) * 100),
+                volume: c.volume ?? 0,
+                iv: c.impliedVolatility ? +(c.impliedVolatility * 100).toFixed(0) : null,
+                prob,
+                itm: isITM,
+              });
+            }
+          });
+      } catch { }
     }
 
-    // Yahoo fallback
-    const base   = await yf.options(symbol);
-    const expiries = (base.expirationDates ?? []).map(d => d.toISOString().slice(0,10)).filter(d => d > today.toISOString().slice(0,10));
-    const targetExp = expiry ?? expiries[0];
-    if (!targetExp) return res.json([]);
-
-    const chain = await yf.options(symbol, { date: new Date(targetExp) });
-    const minProb  = parseFloat(req.query.minProb ?? 0);
-    const minCost  = parseFloat(req.query.minCost ?? 0);
-    const maxCost  = parseFloat(req.query.maxCost ?? budget);
-    const sortBy   = req.query.sort ?? 'prob'; // 'prob' | 'cost'
-
-    const calls = (chain.options?.[0]?.calls ?? [])
-      .filter(c => {
-        const ask = c.ask ?? 0;
-        return ask > 0.01 && ask * 100 <= maxCost && ask * 100 >= minCost && (c.volume ?? 0) > 0;
-      });
-    const T = Math.max((new Date(targetExp) - today) / 1000 / 86400 / 365, 0.001);
-
-    let mapped = calls.map(c => {
-      const { prob, delta } = calcProb(livePrice, c.strike, c.impliedVolatility ?? 0.4, T);
-      const isITM = livePrice > c.strike;
-      return {
-        symbol: c.contractSymbol, strike: c.strike, expiry: targetExp,
-        bid: c.bid, ask: c.ask, cost: Math.round((c.ask ?? c.lastPrice) * 100),
-        volume: c.volume ?? 0, oi: c.openInterest ?? 0,
-        iv: c.impliedVolatility ? +(c.impliedVolatility * 100).toFixed(0) : null,
-        delta, prob, itm: isITM,
-        source: 'yahoo',
-      };
-    })
-    // Default to 60% if no minProb specified
-    .filter(c => c.prob >= (minProb || 60))
-    // Sort: ITM first, then by probability
-    .sort((a,b) => {
-      if (a.itm !== b.itm) return b.itm ? 1 : -1; // ITM first
-      return sortBy === 'cost' ? a.cost - b.cost : b.prob - a.prob;
+    // Sort: ITM first (highest prob), then by probability
+    allOptions.sort((a,b) => {
+      if (a.itm !== b.itm) return b.itm ? 1 : -1;
+      return b.prob - a.prob;
     });
 
-    res.json(mapped);
+    res.json(allOptions.slice(0, 25));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
