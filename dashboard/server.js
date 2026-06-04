@@ -47,6 +47,7 @@ function broadcast(type, data) {
 
 // ── Price cache ────────────────────────────────────────────────────────────────
 const priceCache = {};
+const algoSignals = []; // Store ParadoxAlgo signals with performance tracking
 const WATCHLIST  = ['SPY','QQQ','NVDA','AMD','META','AAPL','TSLA','MSFT',
                     'DVN','OXY','COIN','BAC','SOFI','NIO','BBAI','PLTR'];
 
@@ -117,6 +118,20 @@ app.get('/api/status', (req, res) => {
     },
     pricesReady: Object.keys(priceCache).length > 0,
   });
+});
+
+// Tradovate account selection (supports 2 accounts)
+app.get('/api/tradovate/account', (req, res) => {
+  res.json({ activeAccount: tradovate.getActiveAccount() });
+});
+
+app.post('/api/tradovate/select', (req, res) => {
+  const { accountNum } = req.body;
+  if (![1, 2].includes(accountNum)) {
+    return res.status(400).json({ error: 'Invalid account: use 1 or 2' });
+  }
+  tradovate.selectAccount(accountNum);
+  res.json({ activeAccount: tradovate.getActiveAccount(), message: `Switched to Tradovate account ${accountNum}` });
 });
 
 app.get('/api/prices', (req, res) => res.json(priceCache));
@@ -337,6 +352,47 @@ app.get('/api/wikipedia-batch', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── News ──────────────────────────────────────────────────────────────────────
+app.get('/api/news/:symbol', async (req, res) => {
+  try {
+    const sym = req.params.symbol.toUpperCase();
+    const result = await yf.search(sym, { newsCount: 10, quotesCount: 0, enableFuzzyQuery: false });
+    const news = (result.news ?? []).map(n => ({
+      title:      n.title,
+      publisher:  n.publisher,
+      link:       n.link,
+      publishedAt:new Date(n.providerPublishTime * 1000).toISOString(),
+      thumbnail:  n.thumbnail?.resolutions?.[0]?.url ?? null,
+      relatedTickers: n.relatedTickers ?? [],
+    }));
+    res.json(news);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Market news (general) ──────────────────────────────────────────────────────
+app.get('/api/news', async (req, res) => {
+  try {
+    const topics = ['SPY','QQQ','markets','economy','Fed'];
+    const allNews = [];
+    const seen = new Set();
+    for (const t of topics) {
+      try {
+        const r = await yf.search(t, { newsCount: 5, quotesCount: 0 });
+        for (const n of (r.news ?? [])) {
+          if (!seen.has(n.uuid)) {
+            seen.add(n.uuid);
+            allNews.push({ title:n.title, publisher:n.publisher, link:n.link,
+              publishedAt:new Date(n.providerPublishTime*1000).toISOString(),
+              relatedTickers:n.relatedTickers??[] });
+          }
+        }
+      } catch {}
+    }
+    allNews.sort((a,b) => new Date(b.publishedAt)-new Date(a.publishedAt));
+    res.json(allNews.slice(0,20));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/expiries/:symbol', async (req, res) => {
   try {
     const base = await yf.options(req.params.symbol.toUpperCase());
@@ -359,6 +415,118 @@ app.get('/api/account', async (req, res) => {
     try { results.coinbase = { balances: await coinbase.getBalances() }; } catch {}
   }
   res.json(results);
+});
+
+// ── PickMyTrade Integration ───────────────────────────────────────────────────
+const PICKMYTRADE_TOKENS = {
+  'EMIgWszWXTQZUrKWYAHm4A': true, // Your token from the webhook
+};
+
+app.post('/api/pickmytrade/signal', (req, res) => {
+  const { symbol, token, data, quantity, price, sl, tp, multiple_accounts } = req.body;
+
+  if (!PICKMYTRADE_TOKENS[token]) {
+    return res.status(401).json({ error: 'Invalid PickMyTrade token' });
+  }
+  if (!symbol || !data) {
+    return res.status(400).json({ error: 'Missing symbol or data (action)' });
+  }
+
+  const signal = {
+    id: Date.now(),
+    source: 'pickmytrade',
+    timestamp: new Date().toISOString(),
+    symbol: symbol.replace('1!', '').toUpperCase(),
+    side: data.toUpperCase().includes('BUY') ? 'buy' : 'sell',
+    entry: price ? +price : null,
+    stop: sl ? +sl : null,
+    target: tp ? +tp : null,
+    quantity: quantity ? +quantity : 1,
+    accounts: multiple_accounts || [],
+    status: 'pending',
+    executedPrice: null,
+    pnl: null,
+  };
+
+  algoSignals.push(signal);
+  broadcast('algo_signal', signal);
+  res.json({
+    success: true,
+    signalId: signal.id,
+    message: `PickMyTrade signal: ${symbol} ${data.toUpperCase()}`
+  });
+});
+
+// ── ParadoxAlgo Integration ────────────────────────────────────────────────────
+app.post('/api/algo/signal', (req, res) => {
+  const { symbol, side, entry, stop, target, reason, confidence } = req.body;
+  if (!symbol || !side || entry === undefined) {
+    return res.status(400).json({ error: 'Missing required fields: symbol, side, entry' });
+  }
+  const signal = {
+    id: Date.now(),
+    timestamp: new Date().toISOString(),
+    symbol: symbol.toUpperCase(),
+    side: side.toLowerCase(),
+    entry: +entry,
+    stop: stop ? +stop : null,
+    target: target ? +target : null,
+    reason: reason || 'No reason provided',
+    confidence: Math.min(100, Math.max(0, confidence ? confidence * 100 : 50)),
+    status: 'pending',
+    executedPrice: null,
+    pnl: null,
+  };
+  algoSignals.push(signal);
+  broadcast('algo_signal', signal);
+  res.json({ success: true, signalId: signal.id, message: `Signal received: ${symbol} ${side.toUpperCase()}` });
+});
+
+app.get('/api/algo/signals', (req, res) => {
+  const limit = Math.min(50, parseInt(req.query.limit) || 20);
+  res.json(algoSignals.slice(-limit).reverse());
+});
+
+app.post('/api/algo/execute/:id', (req, res) => {
+  const signal = algoSignals.find(s => s.id === parseInt(req.params.id));
+  if (!signal) return res.status(404).json({ error: 'Signal not found' });
+  signal.status = 'executed';
+  signal.executedPrice = req.body.executedPrice || signal.entry;
+  signal.executedTime = new Date().toISOString();
+  broadcast('algo_signal_update', signal);
+  res.json({ success: true, signal });
+});
+
+app.post('/api/algo/close/:id', (req, res) => {
+  const signal = algoSignals.find(s => s.id === parseInt(req.params.id));
+  if (!signal) return res.status(404).json({ error: 'Signal not found' });
+  const closePrice = req.body.closePrice;
+  if (closePrice === undefined) return res.status(400).json({ error: 'Missing closePrice' });
+  signal.status = 'closed';
+  signal.closedPrice = closePrice;
+  signal.closedTime = new Date().toISOString();
+  const pnl = signal.side === 'buy' ? (closePrice - signal.entry) : (signal.entry - closePrice);
+  signal.pnl = +(pnl.toFixed(2));
+  signal.pnlPct = +((pnl / signal.entry * 100).toFixed(2));
+  broadcast('algo_signal_update', signal);
+  res.json({ success: true, signal });
+});
+
+app.get('/api/algo/stats', (req, res) => {
+  const closed = algoSignals.filter(s => s.status === 'closed');
+  const profitable = closed.filter(s => s.pnl > 0);
+  const totalPnl = closed.reduce((sum, s) => sum + (s.pnl || 0), 0);
+  const avgPnl = closed.length ? +(totalPnl / closed.length).toFixed(2) : 0;
+  const winRate = closed.length ? +((profitable.length / closed.length) * 100).toFixed(1) : 0;
+  res.json({
+    totalSignals: algoSignals.length,
+    executed: algoSignals.filter(s => s.status !== 'pending').length,
+    closed: closed.length,
+    profitable: profitable.length,
+    winRate,
+    totalPnl: +totalPnl.toFixed(2),
+    avgPnl,
+  });
 });
 
 // ── WebSocket ──────────────────────────────────────────────────────────────────

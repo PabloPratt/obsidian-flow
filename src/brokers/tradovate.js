@@ -24,44 +24,60 @@ const MD_ENDPOINTS = {
   live: 'https://md.tradovateapi.com/v1',
 };
 
-let _token = null;
-let _tokenExpiry = 0;
+let _tokens = { 1: null, 2: null };
+let _tokenExpiry = { 1: 0, 2: 0 };
+let _activeAccount = 1;
 
 function env() {
   return process.env.TRADOVATE_ENV === 'live' ? 'live' : 'demo';
 }
 
-async function authenticate() {
-  const { TRADOVATE_USERNAME, TRADOVATE_PASSWORD, TRADOVATE_APP_ID, TRADOVATE_APP_VERSION } = process.env;
-  if (!TRADOVATE_USERNAME) throw new Error('TRADOVATE_USERNAME not set — sign up free at tradovate.com');
+export function selectAccount(accountNum) {
+  if (![1, 2].includes(accountNum)) throw new Error('Invalid account: use 1 or 2');
+  _activeAccount = accountNum;
+}
+
+export function getActiveAccount() {
+  return _activeAccount;
+}
+
+async function authenticate(accountNum = _activeAccount) {
+  const usernameKey = `TRADOVATE_ACCOUNT_${accountNum}_USERNAME`;
+  const passwordKey = `TRADOVATE_ACCOUNT_${accountNum}_PASSWORD`;
+  const username = process.env[usernameKey];
+  const password = process.env[passwordKey];
+  const appId = process.env.TRADOVATE_APP_ID;
+  const appVer = process.env.TRADOVATE_APP_VERSION;
+
+  if (!username) throw new Error(`${usernameKey} not set — sign up free at tradovate.com`);
 
   const res = await fetch(`${ENDPOINTS[env()]}/auth/accesstokenrequest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      name: TRADOVATE_USERNAME,
-      password: TRADOVATE_PASSWORD,
-      appId: TRADOVATE_APP_ID ?? 'Sample App',
-      appVersion: TRADOVATE_APP_VERSION ?? '1.0',
+      name: username,
+      password: password,
+      appId: appId ?? 'Sample App',
+      appVersion: appVer ?? '1.0',
       cid: 0,
       sec: '',
     }),
   });
-  if (!res.ok) throw new Error(`Tradovate auth failed: ${res.status}`);
+  if (!res.ok) throw new Error(`Tradovate auth failed (account ${accountNum}): ${res.status}`);
   const data = await res.json();
   if (data['p-ticket']) throw new Error('Tradovate requires 2FA — complete in app first');
-  _token = data.accessToken;
-  _tokenExpiry = Date.now() + (data.expirationTime ?? 60) * 60 * 1000 - 30000;
-  return _token;
+  _tokens[accountNum] = data.accessToken;
+  _tokenExpiry[accountNum] = Date.now() + (data.expirationTime ?? 60) * 60 * 1000 - 30000;
+  return _tokens[accountNum];
 }
 
-async function token() {
-  if (!_token || Date.now() > _tokenExpiry) await authenticate();
-  return _token;
+async function token(accountNum = _activeAccount) {
+  if (!_tokens[accountNum] || Date.now() > _tokenExpiry[accountNum]) await authenticate(accountNum);
+  return _tokens[accountNum];
 }
 
-async function tvFetch(path, method = 'GET', body = null) {
-  const t = await token();
+async function tvFetch(path, method = 'GET', body = null, accountNum = _activeAccount) {
+  const t = await token(accountNum);
   const res = await fetch(`${ENDPOINTS[env()]}${path}`, {
     method,
     headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
@@ -72,30 +88,30 @@ async function tvFetch(path, method = 'GET', body = null) {
 }
 
 /** List available futures contracts */
-export async function getContracts(productName = null) {
+export async function getContracts(productName = null, accountNum = _activeAccount) {
   if (!isConfigured()) return [];
-  const data = await tvFetch('/contract/items');
+  const data = await tvFetch('/contract/items', 'GET', null, accountNum);
   if (!productName) return data;
   return data.filter(c => c.name.includes(productName.toUpperCase()));
 }
 
 /** Get current account summary */
-export async function getAccount() {
+export async function getAccount(accountNum = _activeAccount) {
   if (!isConfigured()) return null;
-  const accounts = await tvFetch('/account/list');
+  const accounts = await tvFetch('/account/list', 'GET', null, accountNum);
   return accounts?.[0] ?? null;
 }
 
 /** Open positions */
-export async function getPositions() {
+export async function getPositions(accountNum = _activeAccount) {
   if (!isConfigured()) return [];
-  return tvFetch('/position/list') ?? [];
+  return tvFetch('/position/list', 'GET', null, accountNum) ?? [];
 }
 
 /** Live quote for a contract */
-export async function getQuote(contractId) {
+export async function getQuote(contractId, accountNum = _activeAccount) {
   if (!isConfigured()) return null;
-  const t = await token();
+  const t = await token(accountNum);
   const res = await fetch(`${MD_ENDPOINTS[env()]}/md/getQuote?contractId=${contractId}`, {
     headers: { Authorization: `Bearer ${t}` },
   });
@@ -104,9 +120,9 @@ export async function getQuote(contractId) {
 }
 
 /** Recent trades / fills */
-export async function getFills() {
+export async function getFills(accountNum = _activeAccount) {
   if (!isConfigured()) return [];
-  return tvFetch('/fill/list') ?? [];
+  return tvFetch('/fill/list', 'GET', null, accountNum) ?? [];
 }
 
-export const isConfigured = () => !!process.env.TRADOVATE_USERNAME;
+export const isConfigured = () => !!process.env.TRADOVATE_ACCOUNT_1_USERNAME;
