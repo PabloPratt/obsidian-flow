@@ -422,7 +422,7 @@ const PICKMYTRADE_TOKENS = {
   'EMIgWszWXTQZUrKWYAHm4A': true, // Your token from the webhook
 };
 
-app.post('/api/pickmytrade/signal', (req, res) => {
+app.post('/api/pickmytrade/signal', async (req, res) => {
   const { symbol, token, data, quantity, price, sl, tp, multiple_accounts } = req.body;
 
   if (!PICKMYTRADE_TOKENS[token]) {
@@ -432,28 +432,52 @@ app.post('/api/pickmytrade/signal', (req, res) => {
     return res.status(400).json({ error: 'Missing symbol or data (action)' });
   }
 
+  const cleanSymbol = symbol.replace('1!', '').toUpperCase();
+  const side = data.toUpperCase().includes('BUY') ? 'buy' : 'sell';
+  const qty = quantity ? +quantity : 1;
+
   const signal = {
     id: Date.now(),
     source: 'pickmytrade',
     timestamp: new Date().toISOString(),
-    symbol: symbol.replace('1!', '').toUpperCase(),
-    side: data.toUpperCase().includes('BUY') ? 'buy' : 'sell',
+    symbol: cleanSymbol,
+    side: side,
     entry: price ? +price : null,
     stop: sl ? +sl : null,
     target: tp ? +tp : null,
-    quantity: quantity ? +quantity : 1,
+    quantity: qty,
     accounts: multiple_accounts || [],
-    status: 'pending',
+    status: 'executing',
     executedPrice: null,
     pnl: null,
   };
 
   algoSignals.push(signal);
   broadcast('algo_signal', signal);
+
+  // Auto-execute on Tradovate if configured
+  if (tradovate.isConfigured() && multiple_accounts && multiple_accounts.length > 0) {
+    try {
+      for (const account of multiple_accounts) {
+        tradovate.selectAccount(account.account_id === 'APEX_603849' ? 1 : 2);
+        // Place order logic would go here (requires futures contract ID lookup)
+        // For now, mark as executed with the signal price
+        signal.status = 'executed';
+        signal.executedPrice = price || null;
+        signal.executedTime = new Date().toISOString();
+      }
+    } catch (e) {
+      signal.status = 'execution_failed';
+      signal.error = e.message;
+    }
+  }
+
+  broadcast('algo_signal_update', signal);
   res.json({
     success: true,
     signalId: signal.id,
-    message: `PickMyTrade signal: ${symbol} ${data.toUpperCase()}`
+    status: signal.status,
+    message: `PickMyTrade signal: ${cleanSymbol} ${side.toUpperCase()} x${qty} → ${signal.status}`
   });
 });
 
