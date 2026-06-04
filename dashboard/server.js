@@ -48,6 +48,7 @@ function broadcast(type, data) {
 // ── Price cache ────────────────────────────────────────────────────────────────
 const priceCache = {};
 const algoSignals = []; // Store ParadoxAlgo signals with performance tracking
+const optionsCache = new Map(); // Cache options by symbol, TTL 5min
 const WATCHLIST  = ['SPY','QQQ','NVDA','AMD','META','AAPL','TSLA','MSFT',
                     'DVN','OXY','COIN','BAC','SOFI','NIO','BBAI','PLTR'];
 
@@ -184,11 +185,18 @@ app.get('/api/options/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
     const { budget = 100 } = req.query;
+    const sym = symbol.toUpperCase();
+
+    // Check cache first (5 min TTL)
+    const cached = optionsCache.get(sym);
+    if (cached && Date.now() - cached.ts < 300000) {
+      return res.json(cached.data);
+    }
 
     // Get live price
     let livePrice;
     try {
-      const q = await yf.quote(symbol.toUpperCase());
+      const q = await yf.quote(sym);
       livePrice = q.regularMarketPrice;
     } catch { return res.json([]); }
 
@@ -243,7 +251,9 @@ app.get('/api/options/:symbol', async (req, res) => {
       return b.prob - a.prob;
     });
 
-    res.json(allOptions.slice(0, 25));
+    const result = allOptions.slice(0, 25);
+    optionsCache.set(sym, { data: result, ts: Date.now() });
+    res.json(result);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -479,8 +489,19 @@ app.post('/api/pickmytrade/signal', async (req, res) => {
   });
 });
 
+// ── Algo Auth Middleware ──────────────────────────────────────────────────────
+const algoSecret = 'obsidian-flow-algo-access'; // TODO: move to .env
+
+function authAlgo(req, res, next) {
+  const token = req.headers.authorization?.split(' ')[1] || req.query.token;
+  if (!token || token !== algoSecret) {
+    return res.status(401).json({ error: 'Unauthorized — algo signals private' });
+  }
+  next();
+}
+
 // ── ParadoxAlgo Integration ────────────────────────────────────────────────────
-app.post('/api/algo/signal', (req, res) => {
+app.post('/api/algo/signal', authAlgo, (req, res) => {
   const { symbol, side, entry, stop, target, reason, confidence } = req.body;
   if (!symbol || !side || entry === undefined) {
     return res.status(400).json({ error: 'Missing required fields: symbol, side, entry' });
@@ -504,12 +525,12 @@ app.post('/api/algo/signal', (req, res) => {
   res.json({ success: true, signalId: signal.id, message: `Signal received: ${symbol} ${side.toUpperCase()}` });
 });
 
-app.get('/api/algo/signals', (req, res) => {
+app.get('/api/algo/signals', authAlgo, (req, res) => {
   const limit = Math.min(50, parseInt(req.query.limit) || 20);
   res.json(algoSignals.slice(-limit).reverse());
 });
 
-app.post('/api/algo/execute/:id', (req, res) => {
+app.post('/api/algo/execute/:id', authAlgo, (req, res) => {
   const signal = algoSignals.find(s => s.id === parseInt(req.params.id));
   if (!signal) return res.status(404).json({ error: 'Signal not found' });
   signal.status = 'executed';
