@@ -244,6 +244,46 @@ function selectModel(model) {
   showToast(`AI model: ${labels[model]}`, 'ok');
 }
 
+// ── Top Picks (Smart Money + Earnings) ────────────────────────────────────────
+async function loadTopPicks() {
+  try {
+    const picks = await fetch('/api/top-picks').then(r => r.json()).then(d => d.picks || []);
+    const container = document.getElementById('top-picks-list') || document.querySelector('.picks-grid');
+    if (!container) return;
+
+    if (!picks.length) {
+      container.innerHTML = '<div class="pick-add-form" onclick="showAddPick()" style="grid-column:1/-1;"><div style="font-size:14px">No smart money plays detected yet</div></div>';
+      return;
+    }
+
+    container.innerHTML = picks.map(p => `
+      <div class="pick-card" onclick="selectTicker('${p.ticker}');showPage('terminal')">
+        <div class="pick-header">
+          <div style="font-size:13px;font-weight:700;color:var(--cyan)">${p.ticker}</div>
+          <div style="font-size:10px;color:var(--sub)">Earnings in ${p.daysOut}d</div>
+        </div>
+        <div class="pick-details">
+          <div><span style="color:var(--muted)">Stock:</span> $${p.price?.toFixed(2)}</div>
+          <div><span style="color:var(--muted)">Call:</span> ${p.strike?.toFixed(2)} @ $${p.callPrice?.toFixed(2)}</div>
+          <div><span style="color:var(--muted)">Exp:</span> ${p.expiry}</div>
+        </div>
+        <div class="pick-stats" style="display:flex;gap:12px;margin-top:8px;">
+          <div style="flex:1;background:var(--s2);padding:6px;border-radius:4px;text-align:center;">
+            <div style="font-size:9px;color:var(--muted)">ITM Prob</div>
+            <div style="font-size:13px;font-weight:700;color:var(--green)">${p.prob}%</div>
+          </div>
+          <div style="flex:1;background:var(--s2);padding:6px;border-radius:4px;text-align:center;">
+            <div style="font-size:9px;color:var(--muted)">Smart $$</div>
+            <div style="font-size:11px;font-weight:700;color:var(--accent)">${(p.flowScore/1000).toFixed(1)}k</div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    console.error('Top picks error:', e);
+  }
+}
+
 // ── Crypto bar ────────────────────────────────────────────────────────────────
 async function loadCrypto() {
   try {
@@ -795,6 +835,7 @@ window.addEventListener('load', () => {
   initChart();
   connectWS();
   renderTerminalPicks();
+  loadTopPicks();
   loadStatus();
   loadCrypto();
 

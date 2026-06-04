@@ -553,6 +553,75 @@ app.get('/api/algo/stats', (req, res) => {
   });
 });
 
+// ── Top Picks (Smart Money + Earnings) ─────────────────────────────────────────
+app.get('/api/top-picks', async (req, res) => {
+  try {
+    // Step 1: Get unusual options flow (smart money positioning)
+    const flowData = await fetchOptionsFlow({ minPremium: 50_000, limit: 10 }).catch(() => ({ signals: [] }));
+    const flowTickers = flowData.signals?.map(s => s.ticker).slice(0, 8) || [];
+
+    if (!flowTickers.length) {
+      return res.json({ picks: [] });
+    }
+
+    // Step 2: For each ticker, get earnings date and options
+    const picks = [];
+    for (const ticker of flowTickers) {
+      try {
+        // Get earnings date
+        const quote = await yf.quote(ticker);
+        const earningsDate = quote.epsTrailingTwelveMonths ? new Date() : null;
+
+        // Get options expiries (next 2 weeks for earnings plays)
+        const optionsData = await yf.options(ticker);
+        const expiries = (optionsData.expirationDates || [])
+          .map(d => d.toISOString().slice(0, 10))
+          .filter(d => {
+            const daysOut = (new Date(d) - new Date()) / 86400000;
+            return daysOut >= 3 && daysOut <= 45; // Earnings window
+          })
+          .slice(0, 2);
+
+        if (!expiries.length) continue;
+
+        // Get call options for nearest expiry
+        const chain = await yf.options(ticker, { date: expiries[0] });
+        const calls = chain.calls || [];
+        const atmCall = calls.find(c => Math.abs((c.strike || 0) - (quote.regularMarketPrice || 0)) < 5);
+
+        if (atmCall) {
+          const { prob } = calcProb(
+            quote.regularMarketPrice,
+            atmCall.strike,
+            atmCall.impliedVolatility || 0.3,
+            (new Date(expiries[0]) - new Date()) / 86400000 / 365
+          );
+
+          picks.push({
+            ticker,
+            price: quote.regularMarketPrice,
+            strike: atmCall.strike,
+            expiry: expiries[0],
+            callPrice: atmCall.lastPrice || atmCall.bid || 0,
+            prob: Math.round(prob),
+            daysOut: Math.round((new Date(expiries[0]) - new Date()) / 86400000),
+            flowScore: flowData.signals?.find(s => s.ticker === ticker)?.premium || 0,
+          });
+        }
+      } catch (e) {
+        // Skip on error
+      }
+    }
+
+    // Sort by: probability × flow confidence
+    picks.sort((a, b) => (b.prob * Math.log(b.flowScore + 1)) - (a.prob * Math.log(a.flowScore + 1)));
+
+    res.json({ picks: picks.slice(0, 5) });
+  } catch (e) {
+    res.json({ picks: [], error: e.message });
+  }
+});
+
 // ── WebSocket ──────────────────────────────────────────────────────────────────
 wss.on('connection', ws => {
   ws.send(JSON.stringify({ type: 'prices', data: priceCache, ts: Date.now() }));
