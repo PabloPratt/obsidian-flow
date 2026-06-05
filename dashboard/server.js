@@ -194,6 +194,22 @@ app.get('/api/options/:symbol', async (req, res) => {
 
     if (!expiries.length) return res.json([]);
 
+    // Get current price and earnings warning
+    let currentPrice = 0;
+    let earningsInfo = null;
+    try {
+      const quote = await yf.quote(sym);
+      currentPrice = quote.regularMarketPrice;
+      if (quote.earningsDate) {
+        const earningDate = new Date(quote.earningsDate[0]);
+        const today = new Date();
+        const daysToEarnings = Math.ceil((earningDate - today) / (1000 * 60 * 60 * 24));
+        if (daysToEarnings > 0 && daysToEarnings <= 14) {
+          earningsInfo = `Earnings in ${daysToEarnings}d`;
+        }
+      }
+    } catch { }
+
     // Search ALL expirations using REAL Tradier Greeks
     let allOptions = [];
     let maxPainByExpiry = {};
@@ -233,6 +249,12 @@ app.get('/api/options/:symbol', async (req, res) => {
               const spread = ask - bid;
               const spreadPct = bid > 0 ? (spread / bid * 100).toFixed(1) : '0';
 
+              // Risk metrics
+              const maxLoss = +(ask * 100).toFixed(0); // Worst case: lose entire premium
+              const breakeven = +(opt.strike + ask).toFixed(2); // Strike + premium paid
+              const targetProfit = +(ask * 0.5).toFixed(2); // 50% profit target
+              const targetPrice = +(opt.strike + ask + targetProfit).toFixed(2); // Price to exit at 50% gain
+
               allOptions.push({
                 ticker: sym,
                 strike: opt.strike,
@@ -252,6 +274,11 @@ app.get('/api/options/:symbol', async (req, res) => {
                 vega:  +(opt.vega ?? 0).toFixed(3),
                 itm: (opt.delta ?? 0) >= 0.5,
                 maxPain: maxPainByExpiry[exp] ?? null,
+                // Risk metrics
+                maxLoss,
+                breakeven,
+                targetPrice,
+                earningsWarning: earningsInfo,
               });
             }
           });
@@ -312,10 +339,49 @@ app.get('/api/vix', async (req, res) => {
   try {
     const vix = await yf.quote('^VIX');
     const vxn = await yf.quote('^VXN');
+    const price = vix.regularMarketPrice;
+
+    // Historical VIX levels for rank calculation
+    const vixHigh52w = 40; // Approximate 52-week high (varies)
+    const vixLow52w = 12;  // Approximate 52-week low (varies)
+    const ivRank = Math.max(0, Math.min(100, ((price - vixLow52w) / (vixHigh52w - vixLow52w) * 100)));
+
     res.json({
-      vix: { price: vix.regularMarketPrice, change: vix.regularMarketChangePercent },
+      vix: { price, change: vix.regularMarketChangePercent },
       vxn: { price: vxn.regularMarketPrice, change: vxn.regularMarketChangePercent },
-      regime: vix.regularMarketPrice > 25 ? 'high' : vix.regularMarketPrice > 18 ? 'normal' : 'low',
+      regime: price > 25 ? 'high' : price > 18 ? 'normal' : 'low',
+      ivRank: Math.round(ivRank),
+      ivRankLabel: ivRank > 70 ? 'expensive' : ivRank > 30 ? 'normal' : 'cheap',
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Earnings Calendar ─────────────────────────────────────────────────────────
+app.get('/api/earnings/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const sym = symbol.toUpperCase();
+    const quote = await yf.quote(sym);
+    const earnings = quote.earningsDate ?? null;
+
+    let daysToEarnings = null;
+    let earningsWarning = null;
+    if (earnings) {
+      const earningDate = new Date(earnings[0]);
+      const today = new Date();
+      daysToEarnings = Math.ceil((earningDate - today) / (1000 * 60 * 60 * 24));
+
+      // Warn if earnings within 14 days (IV spike risk)
+      if (daysToEarnings > 0 && daysToEarnings <= 14) {
+        earningsWarning = `⚠️ Earnings in ${daysToEarnings}d — IV will spike`;
+      }
+    }
+
+    res.json({
+      symbol: sym,
+      earningsDate: earnings?.[0],
+      daysToEarnings,
+      warning: earningsWarning,
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });

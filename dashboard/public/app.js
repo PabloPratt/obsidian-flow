@@ -407,10 +407,11 @@ async function loadOptions() {
       return;
     }
 
-    // Load backtesting + VIX context
-    const [backtest, vix] = await Promise.allSettled([
+    // Load backtesting + VIX context + earnings
+    const [backtest, vix, earnings] = await Promise.allSettled([
       fetch(`/api/backtest/${activeTicker}`).then(r=>r.json()),
-      fetch('/api/vix').then(r=>r.json())
+      fetch('/api/vix').then(r=>r.json()),
+      fetch(`/api/earnings/${activeTicker}`).then(r=>r.json())
     ]);
 
     let btHtml = '';
@@ -419,18 +420,25 @@ async function loadOptions() {
       const regimeColor = vix.status === 'fulfilled' && vix.value.regime === 'high' ? '#f87171' :
                          vix.status === 'fulfilled' && vix.value.regime === 'low' ? '#60a5fa' : '#fbbf24';
       const vixPrice = vix.status === 'fulfilled' ? vix.value.vix.price.toFixed(1) : '—';
+      const ivRankLabel = vix.status === 'fulfilled' ? vix.value.ivRankLabel : '—';
+      const ivRankColor = vix.status === 'fulfilled' && vix.value.ivRankLabel === 'expensive' ? '#f87171' :
+                         vix.status === 'fulfilled' && vix.value.ivRankLabel === 'cheap' ? '#34d399' : '#fbbf24';
+      const earningsWarn = earnings.status === 'fulfilled' && earnings.value.warning ?
+        `<div style="color:#f87171;font-size:10px;margin-top:6px">${earnings.value.warning}</div>` : '';
+
       btHtml = `
         <div style="background:rgba(122,61,237,0.1);border:1px solid #7c3aed;border-radius:6px;padding:12px;margin-bottom:12px;font-size:11px">
           <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-            <span style="color:var(--muted)"><strong>Backtest (30d)</strong></span>
+            <span style="color:var(--muted)"><strong>Backtest (30d) + Context</strong></span>
             <span style="color:${regimeColor};font-weight:700">VIX ${vixPrice}</span>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px">
             <div><span style="color:var(--muted)">Win Rate:</span> <span style="color:var(--cyan)">${s.winRate}%</span></div>
-            <div><span style="color:var(--muted)">Total Trades:</span> <span style="color:var(--cyan)">${s.totalTrades}</span></div>
             <div><span style="color:var(--muted)">Profit Factor:</span> <span style="color:${s.profitFactor > 1.5 ? '#34d399' : '#fbbf24'}">${s.profitFactor}</span></div>
-            <div><span style="color:var(--muted)">Total P/L:</span> <span style="color:${s.totalPL > 0 ? '#34d399' : '#f87171'}">$${s.totalPL}</span></div>
+            <div><span style="color:var(--muted)">IV Rank:</span> <span style="color:${ivRankColor}">${ivRankLabel}</span></div>
+            <div><span style="color:var(--muted)">P/L:</span> <span style="color:${s.totalPL > 0 ? '#34d399' : '#f87171'}">$${s.totalPL}</span></div>
           </div>
+          ${earningsWarn}
         </div>`;
     }
 
@@ -442,7 +450,8 @@ async function loadOptions() {
       </div>` +
       opts.map(o => {
         const pc = o.prob>=40?'#34d399':o.prob>=20?'#fbbf24':'#4b5563';
-        const spreadWarning = o.spreadPct > 3 ? ' ⚠️ wide spread' : '';
+        const spreadWarning = o.spreadPct > 3 ? ' ⚠️ wide' : '';
+        const earningsAlert = o.earningsWarning ? `<div style="color:#f87171;font-size:9px;margin-top:4px;font-weight:600">${o.earningsWarning}</div>` : '';
         return `<div class="card" onclick="openOrderModal({ticker:'${activeTicker}',contract:'${o.symbol}',type:'call',strike:${o.strike},expiry:'${o.expiry?.slice(5)}',cost:${o.cost},prob:${o.prob},tags:['call']${o.itm?",\'itm\'":''}})" style="cursor:pointer">
           <div class="row" style="margin-bottom:4px">
             <div>
@@ -459,8 +468,14 @@ async function loadOptions() {
           <div style="display:flex;gap:10px;font-size:10px;color:var(--muted);margin-bottom:5px;flex-wrap:wrap">
             <span>IV ${o.iv??'—'}%</span><span>Vol ${(o.volume??0).toLocaleString()}</span><span>OI ${(o.openInterest??0).toLocaleString()}</span><span>Δ ${o.delta}</span><span style="color:var(--sub)">${spreadWarning}</span>
           </div>
-          <div style="font-size:9px;color:var(--sub);margin-bottom:5px">Max Pain: $${o.maxPain?.toFixed(0) ?? '—'}</div>
-          <div class="row">
+          <div style="font-size:9px;color:var(--sub);margin-bottom:5px;display:grid;grid-template-columns:1fr 1fr">
+            <span>Max Pain: $${o.maxPain?.toFixed(0) ?? '—'}</span>
+            <span>Max Loss: $${o.maxLoss}</span>
+            <span>Breakeven: $${o.breakeven}</span>
+            <span>Exit at: $${o.targetPrice}</span>
+          </div>
+          ${earningsAlert}
+          <div class="row" style="margin-top:6px">
             <div class="prob-bar" style="flex:1;margin-right:8px">
               <div class="prob-fill" style="width:${Math.min(o.prob,100)}%;background:${o.prob>=40?'linear-gradient(90deg,#34d399,#22d3ee)':pc}"></div>
             </div>
@@ -869,9 +884,9 @@ async function loadVIX() {
   try {
     const vix = await fetch('/api/vix').then(r=>r.json());
     const price = vix.vix.price.toFixed(1);
-    const change = vix.vix.change > 0 ? '+' : '';
     const color = vix.regime === 'high' ? '#f87171' : vix.regime === 'low' ? '#60a5fa' : '#fbbf24';
-    document.getElementById('h-vix').innerHTML = `<span style="color:${color}">${price}</span>`;
+    const rankColor = vix.ivRankLabel === 'expensive' ? '#f87171' : vix.ivRankLabel === 'cheap' ? '#34d399' : '#fbbf24';
+    document.getElementById('h-vix').innerHTML = `<span style="color:${color}">${price}</span><div style="font-size:9px;color:${rankColor};margin-top:2px">${vix.ivRankLabel}</div>`;
   } catch(e) { console.error('VIX load failed:', e.message); }
 }
 
