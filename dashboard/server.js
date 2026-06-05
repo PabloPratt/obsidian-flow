@@ -557,6 +557,55 @@ app.get('/api/news', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Sector Heat Map ───────────────────────────────────────────────────────────
+const SECTOR_ETFS = {
+  'Tech':       'XLK', 'Financials': 'XLF', 'Energy':      'XLE',
+  'Healthcare': 'XLV', 'Consumer':   'XLY', 'Industrials': 'XLI',
+  'Materials':  'XLB', 'Utilities':  'XLU', 'Real Estate': 'XLRE',
+  'Semis':      'SOXX','Biotech':    'XBI', 'Defense':     'ITA',
+};
+let sectorCache = { data: null, ts: 0 };
+app.get('/api/sectors', async (req, res) => {
+  try {
+    if (sectorCache.data && Date.now() - sectorCache.ts < 60000) {
+      return res.json(sectorCache.data);
+    }
+    const results = await Promise.allSettled(
+      Object.entries(SECTOR_ETFS).map(async ([name, sym]) => {
+        const q = await yf.quote(sym);
+        return { sector: name, symbol: sym, change: q.regularMarketChangePercent, price: q.regularMarketPrice };
+      })
+    );
+    const data = results.filter(r => r.status === 'fulfilled').map(r => r.value)
+      .sort((a, b) => b.change - a.change);
+    sectorCache = { data, ts: Date.now() };
+    res.json(data);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Market Movers ─────────────────────────────────────────────────────────────
+let moversCache = { data: null, ts: 0 };
+app.get('/api/movers', async (req, res) => {
+  try {
+    if (moversCache.data && Date.now() - moversCache.ts < 120000) {
+      return res.json(moversCache.data);
+    }
+    const [gainers, losers, active] = await Promise.all([
+      yf.dailyGainers({ count: 5 }),
+      yf.dailyLosers({ count: 5 }),
+      yf.mostActives({ count: 5 }),
+    ]);
+    const fmt = q => ({ symbol: q.symbol, price: q.regularMarketPrice, change: q.regularMarketChangePercent, volume: q.regularMarketVolume });
+    const data = {
+      gainers: (gainers.quotes ?? []).map(fmt),
+      losers:  (losers.quotes ?? []).map(fmt),
+      active:  (active.quotes ?? []).map(fmt),
+    };
+    moversCache = { data, ts: Date.now() };
+    res.json(data);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/expiries/:symbol', async (req, res) => {
   try {
     const base = await yf.options(req.params.symbol.toUpperCase());

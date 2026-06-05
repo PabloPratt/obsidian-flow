@@ -604,21 +604,60 @@ async function loadNewsTab(ticker) {
 
 // ── Intel Tab ─────────────────────────────────────────────────────────────────
 async function loadIntel() {
-  try {
-    const tickers = getWatchlist().slice(0,10);
-    const wiki = await fetch('/api/wikipedia-batch?tickers=' + tickers.join(',')).then(r=>r.json());
-    document.getElementById('wiki-list').innerHTML = (Array.isArray(wiki)&&wiki.length)
-      ? wiki.map(w => {
-          const up = (w.trend??0) >= 0;
-          return `<div class="row" style="padding:5px 0;border-bottom:1px solid var(--border)">
-            <span style="font-weight:600;font-size:12px;cursor:pointer;color:var(--cyan)" onclick="selectTicker('${w.ticker}')">${w.ticker}</span>
-            <span style="font-size:10px;color:var(--muted)">${(w.avg??0).toLocaleString()}/day</span>
-            <span style="font-size:12px;font-weight:700;color:${up?'#34d399':'#f87171'}">${up?'▲':'▼'}${Math.abs(w.trend??0)}%</span>
-          </div>`;
-        }).join('')
-      : '<div style="color:var(--muted);font-size:11px">No Wikipedia data</div>';
-  } catch(e) {
-    document.getElementById('wiki-list').innerHTML = `<div style="color:var(--muted);font-size:11px">${e.message}</div>`;
+  const [sectors, movers, wiki] = await Promise.allSettled([
+    fetch('/api/sectors').then(r=>r.json()),
+    fetch('/api/movers').then(r=>r.json()),
+    fetch('/api/wikipedia-batch?tickers=' + getWatchlist().slice(0,10).join(',')).then(r=>r.json()),
+  ]);
+
+  // Sector heat map
+  if (sectors.status === 'fulfilled') {
+    document.getElementById('sector-list').innerHTML = sectors.value.map(s => {
+      const up = s.change >= 0;
+      const bar = Math.min(Math.abs(s.change) * 10, 100);
+      const color = up ? '#34d399' : '#f87171';
+      return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer" onclick="selectTicker('${s.symbol}')">
+        <span style="font-size:10px;color:var(--muted);width:72px;flex-shrink:0">${s.sector}</span>
+        <div style="flex:1;height:10px;background:var(--s2);border-radius:3px;overflow:hidden">
+          <div style="width:${bar}%;height:100%;background:${color};opacity:.7"></div>
+        </div>
+        <span style="font-size:10px;font-weight:700;color:${color};width:42px;text-align:right">${up?'+':''}${s.change.toFixed(2)}%</span>
+      </div>`;
+    }).join('');
+  }
+
+  // Market movers
+  if (movers.status === 'fulfilled') {
+    const { gainers, losers, active } = movers.value;
+    const row = (q, color) => `<div class="row" style="padding:3px 0;cursor:pointer" onclick="selectTicker('${q.symbol}')">
+      <span style="font-size:11px;font-weight:700;color:var(--cyan)">${q.symbol}</span>
+      <span style="font-size:10px;color:${color};font-weight:600">${q.change>=0?'+':''}${q.change?.toFixed(2)}%</span>
+    </div>`;
+    document.getElementById('movers-list').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:10px">
+        <div>
+          <div style="color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;font-size:9px">Top Gainers</div>
+          ${(gainers||[]).map(q=>row(q,'#34d399')).join('')}
+        </div>
+        <div>
+          <div style="color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;font-size:9px">Top Losers</div>
+          ${(losers||[]).map(q=>row(q,'#f87171')).join('')}
+        </div>
+      </div>`;
+  }
+
+  // Wikipedia interest
+  if (wiki.status === 'fulfilled' && Array.isArray(wiki.value) && wiki.value.length) {
+    document.getElementById('wiki-list').innerHTML = wiki.value.map(w => {
+      const up = (w.trend??0) >= 0;
+      return `<div class="row" style="padding:5px 0;border-bottom:1px solid var(--border)">
+        <span style="font-weight:600;font-size:12px;cursor:pointer;color:var(--cyan)" onclick="selectTicker('${w.ticker}')">${w.ticker}</span>
+        <span style="font-size:10px;color:var(--muted)">${(w.avg??0).toLocaleString()}/day</span>
+        <span style="font-size:12px;font-weight:700;color:${up?'#34d399':'#f87171'}">${up?'▲':'▼'}${Math.abs(w.trend??0)}%</span>
+      </div>`;
+    }).join('');
+  } else {
+    document.getElementById('wiki-list').innerHTML = '<div style="color:var(--muted);font-size:11px">No Wikipedia data</div>';
   }
 }
 
