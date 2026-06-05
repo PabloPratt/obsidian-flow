@@ -188,19 +188,21 @@ function connectWS() {
 function renderWatchlist(prices) {
   const wl   = document.getElementById('watchlist');
   const list = getWatchlist();
-  if (!Object.keys(prices).length && !list.length) return;
+  if (!list.length) return;
 
   wl.innerHTML = list.map(sym => {
-    const q    = prices[sym] ?? { price: null, changePct: null };
+    const q    = prices[sym] ?? {};
     const up   = (q.changePct ?? 0) >= 0;
     const dp   = q.extendedPrice ?? q.price;
     const ext  = q.extendedPrice
       ? `<span class="tick-ext">${q.session==='afterhours'?'AH':'PM'}</span>` : '';
+    const priceStr = dp ? `$${dp.toFixed(2)}` : '<span style="opacity:.3">—</span>';
+    const chgStr   = q.changePct != null ? `${up?'+':''}${q.changePct.toFixed(2)}%` : '';
     return `<div class="tick${sym===activeTicker?' sel':''}" id="ti-${sym}" onclick="selectTicker('${sym}')">
       <div><span class="tick-sym">${sym}</span>${ext}</div>
       <div class="tick-right">
-        <div class="tick-price ${up?'up':'dn'}">${dp?'$'+dp.toFixed(2):'—'}</div>
-        <div class="tick-chg ${up?'up':'dn'}">${q.changePct!=null?(up?'+':'')+q.changePct.toFixed(2)+'%':'—'}</div>
+        <div class="tick-price ${up?'up':'dn'}">${priceStr}</div>
+        <div class="tick-chg ${up?'up':'dn'}">${chgStr}</div>
       </div>
       <button class="tick-del" onclick="event.stopPropagation();removeTicker('${sym}')">✕</button>
     </div>`;
@@ -247,40 +249,62 @@ function selectModel(model) {
 // ── Top Picks (Smart Money + Earnings) ────────────────────────────────────────
 async function loadTopPicks() {
   try {
-    const picks = await fetch('/api/top-picks').then(r => r.json()).then(d => d.picks || []);
     const container = document.getElementById('top-picks-list') || document.querySelector('.picks-grid');
     if (!container) return;
+    container.innerHTML = '<div class="loading spin" style="grid-column:1/-1">Scanning smart money...</div>';
+
+    const picks = await fetch('/api/top-picks').then(r => r.json()).then(d => d.picks || []);
 
     if (!picks.length) {
-      container.innerHTML = '<div class="pick-add-form" onclick="showAddPick()" style="grid-column:1/-1;"><div style="font-size:14px">No smart money plays detected yet</div></div>';
+      container.innerHTML = '<div style="grid-column:1/-1;padding:24px;text-align:center;color:var(--muted)">No smart money plays detected right now</div>';
       return;
     }
 
-    container.innerHTML = picks.map(p => `
-      <div class="pick-card" onclick="selectTicker('${p.ticker}');showPage('terminal')">
-        <div class="pick-header">
-          <div style="font-size:13px;font-weight:700;color:var(--cyan)">${p.ticker}</div>
-          <div style="font-size:10px;color:var(--sub)">Earnings in ${p.daysOut}d</div>
-        </div>
-        <div class="pick-details">
-          <div><span style="color:var(--muted)">Stock:</span> $${p.price?.toFixed(2)}</div>
-          <div><span style="color:var(--muted)">Call:</span> ${p.strike?.toFixed(2)} @ $${p.callPrice?.toFixed(2)}</div>
-          <div><span style="color:var(--muted)">Exp:</span> ${p.expiry}</div>
-        </div>
-        <div class="pick-stats" style="display:flex;gap:12px;margin-top:8px;">
-          <div style="flex:1;background:var(--s2);padding:6px;border-radius:4px;text-align:center;">
-            <div style="font-size:9px;color:var(--muted)">ITM Prob</div>
-            <div style="font-size:13px;font-weight:700;color:var(--green)">${p.prob}%</div>
+    container.innerHTML = picks.map(p => {
+      const premium = p.netPremium >= 1_000_000
+        ? `$${(p.netPremium/1_000_000).toFixed(1)}M`
+        : `$${(p.netPremium/1000).toFixed(0)}K`;
+      const bullColor = p.score >= 70 ? '#34d399' : p.score >= 50 ? '#fbbf24' : '#f87171';
+      return `
+      <div class="pick-card" onclick="selectTicker('${p.ticker}');showPage('terminal',document.querySelector('.nav-link'))" style="cursor:pointer">
+        <div class="pick-header" style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px">
+          <div>
+            <span style="font-size:16px;font-weight:800;color:var(--cyan)">${p.ticker}</span>
+            ${p.topSignal ? `<div style="font-size:9px;color:var(--accent);font-weight:600;margin-top:2px">${p.topSignal}</div>` : ''}
           </div>
-          <div style="flex:1;background:var(--s2);padding:6px;border-radius:4px;text-align:center;">
-            <div style="font-size:9px;color:var(--muted)">Smart $$</div>
-            <div style="font-size:11px;font-weight:700;color:var(--accent)">${(p.flowScore/1000).toFixed(1)}k</div>
+          <div style="text-align:right">
+            <div style="font-size:13px;font-weight:700;color:${bullColor}">${p.score}% BULL</div>
+            <div style="font-size:9px;color:var(--muted)">${p.alertCount} alerts</div>
           </div>
         </div>
-      </div>
-    `).join('');
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:10px;margin-bottom:8px">
+          <div style="background:var(--s2);padding:6px;border-radius:4px;text-align:center">
+            <div style="color:var(--muted);margin-bottom:2px">Net Smart $</div>
+            <div style="font-weight:700;color:#34d399">${premium}</div>
+          </div>
+          <div style="background:var(--s2);padding:6px;border-radius:4px;text-align:center">
+            <div style="color:var(--muted);margin-bottom:2px">IV</div>
+            <div style="font-weight:700;color:var(--cyan)">${p.iv ?? '—'}%</div>
+          </div>
+          <div style="background:var(--s2);padding:6px;border-radius:4px;text-align:center">
+            <div style="color:var(--muted);margin-bottom:2px">Top Strike</div>
+            <div style="font-weight:700">$${p.topStrike ?? '—'}</div>
+          </div>
+          <div style="background:var(--s2);padding:6px;border-radius:4px;text-align:center">
+            <div style="color:var(--muted);margin-bottom:2px">Exp</div>
+            <div style="font-weight:700">${p.topExpiry?.slice(5) ?? '—'} (${p.daysToExpiry}d)</div>
+          </div>
+        </div>
+        <div style="background:rgba(122,61,237,0.15);border:1px solid #7c3aed33;border-radius:4px;padding:5px 8px;font-size:9px;color:var(--muted);display:flex;justify-content:space-between">
+          <span>📞 $${(p.callPremium/1000).toFixed(0)}K calls</span>
+          <span>📉 $${(p.putPremium/1000).toFixed(0)}K puts</span>
+        </div>
+      </div>`;
+    }).join('');
   } catch (e) {
     console.error('Top picks error:', e);
+    const container = document.getElementById('top-picks-list') || document.querySelector('.picks-grid');
+    if (container) container.innerHTML = `<div style="color:var(--red);grid-column:1/-1;padding:12px">${e.message}</div>`;
   }
 }
 
@@ -452,8 +476,10 @@ async function loadOptions() {
         const pc = o.prob>=40?'#34d399':o.prob>=20?'#fbbf24':'#4b5563';
         const spreadWarning = o.spreadPct > 3 ? ' ⚠️ wide' : '';
         const earningsAlert = o.earningsWarning ? `<div style="color:#f87171;font-size:9px;margin-top:4px;font-weight:600">${o.earningsWarning}</div>` : '';
+        const smartMoneyLabel = o.smartMoneySignal ? `<span class="badge" style="background:#7c3aed;color:#fff;font-size:8px;padding:2px 6px;border-radius:3px;font-weight:600">🤖 ${o.smartMoneySignal}</span>` : '';
+        const premiumLabel = o.smartMoneyPremium ? `$${(o.smartMoneyPremium/1000).toFixed(0)}K` : '—';
         return `<div class="card" onclick="openOrderModal({ticker:'${activeTicker}',contract:'${o.symbol}',type:'call',strike:${o.strike},expiry:'${o.expiry?.slice(5)}',cost:${o.cost},prob:${o.prob},tags:['call']${o.itm?",\'itm\'":''}})" style="cursor:pointer">
-          <div class="row" style="margin-bottom:4px">
+          <div class="row" style="margin-bottom:6px">
             <div>
               <span style="font-size:13px;font-weight:700;color:var(--cyan)">${activeTicker}</span>
               <span style="font-size:13px;font-weight:700;margin-left:4px">$${o.strike}C</span>
@@ -462,17 +488,18 @@ async function loadOptions() {
             </div>
             <div style="text-align:right">
               <div style="color:var(--green);font-weight:700">$${o.ask}</div>
-              <div style="font-size:9px;color:var(--muted)">b/a: $${o.bid}-$${o.ask}</div>
+              <div style="font-size:9px;color:var(--muted)">Smart $${premiumLabel}</div>
             </div>
           </div>
+          ${smartMoneyLabel ? `<div style="margin-bottom:6px">${smartMoneyLabel}</div>` : ''}
           <div style="display:flex;gap:10px;font-size:10px;color:var(--muted);margin-bottom:5px;flex-wrap:wrap">
             <span>IV ${o.iv??'—'}%</span><span>Vol ${(o.volume??0).toLocaleString()}</span><span>OI ${(o.openInterest??0).toLocaleString()}</span><span>Δ ${o.delta}</span><span style="color:var(--sub)">${spreadWarning}</span>
           </div>
           <div style="font-size:9px;color:var(--sub);margin-bottom:5px;display:grid;grid-template-columns:1fr 1fr">
-            <span>Max Pain: $${o.maxPain?.toFixed(0) ?? '—'}</span>
             <span>Max Loss: $${o.maxLoss}</span>
             <span>Breakeven: $${o.breakeven}</span>
             <span>Exit at: $${o.targetPrice}</span>
+            <span>Conviction: ${o.smartMoneyPremium ? '🔥' : '—'}</span>
           </div>
           ${earningsAlert}
           <div class="row" style="margin-top:6px">

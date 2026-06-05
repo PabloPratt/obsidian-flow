@@ -731,67 +731,59 @@ app.get('/api/algo/stats', (req, res) => {
 // ── Top Picks (Smart Money + Earnings) ─────────────────────────────────────────
 app.get('/api/top-picks', async (req, res) => {
   try {
-    // Step 1: Get unusual options flow (smart money positioning)
-    const flowData = await fetchOptionsFlow({ minPremium: 50_000, limit: 10 }).catch(() => ({ signals: [] }));
-    const flowTickers = flowData.signals?.map(s => s.ticker).slice(0, 8) || [];
+    // Pull the last 7 days of flow alerts from Unusual Whales (real smart money)
+    const alertsRes = await fetch(
+      `https://api.unusualwhales.com/api/option-trades/flow-alerts?limit=100&min_premium=200000`,
+      { headers: { Authorization: `Bearer ${process.env.UNUSUAL_WHALES_API_KEY}` } }
+    );
+    if (!alertsRes.ok) throw new Error(`UW API error: ${alertsRes.status}`);
+    const { data: alerts } = await alertsRes.json();
 
-    if (!flowTickers.length) {
-      return res.json({ picks: [] });
+    // Aggregate by ticker: total premium + call/put ratio
+    const byTicker = {};
+    for (const a of alerts) {
+      const t = a.ticker;
+      if (!t || t.includes(' ')) continue; // skip multi-leg
+      if (!byTicker[t]) byTicker[t] = { ticker: t, callPremium: 0, putPremium: 0, alerts: [] };
+      const premium = parseInt(a.total_premium ?? 0);
+      if (a.type === 'call') byTicker[t].callPremium += premium;
+      else byTicker[t].putPremium += premium;
+      byTicker[t].alerts.push(a);
     }
 
-    // Step 2: For each ticker, get earnings date and options
-    const picks = [];
-    for (const ticker of flowTickers) {
-      try {
-        // Get earnings date
-        const quote = await yf.quote(ticker);
-        const earningsDate = quote.epsTrailingTwelveMonths ? new Date() : null;
+    // Score: call premium - put premium (net bullish conviction)
+    const picks = Object.values(byTicker)
+      .filter(t => t.callPremium > t.putPremium) // net bullish only
+      .map(t => {
+        const topAlert = t.alerts
+          .filter(a => a.type === 'call')
+          .sort((a, b) => parseInt(b.total_premium) - parseInt(a.total_premium))[0];
 
-        // Get options expiries (next 2 weeks for earnings plays)
-        const optionsData = await yf.options(ticker);
-        const expiries = (optionsData.expirationDates || [])
-          .map(d => d.toISOString().slice(0, 10))
-          .filter(d => {
-            const daysOut = (new Date(d) - new Date()) / 86400000;
-            return daysOut >= 3 && daysOut <= 45; // Earnings window
-          })
-          .slice(0, 2);
+        const netBullish = t.callPremium - t.putPremium;
+        const bullishRatio = t.callPremium / (t.callPremium + t.putPremium);
 
-        if (!expiries.length) continue;
+        return {
+          ticker: t.ticker,
+          score: Math.round(bullishRatio * 100),
+          netPremium: netBullish,
+          callPremium: t.callPremium,
+          putPremium: t.putPremium,
+          alertCount: t.alerts.length,
+          topStrike: topAlert?.strike,
+          topExpiry: topAlert?.expiry,
+          topAsk: topAlert?.ask,
+          topSignal: topAlert?.alert_rule,
+          underlying: topAlert?.underlying_price,
+          iv: topAlert?.iv_end ? +(parseFloat(topAlert.iv_end) * 100).toFixed(1) : null,
+          daysToExpiry: topAlert?.expiry
+            ? Math.ceil((new Date(topAlert.expiry) - new Date()) / 86400000)
+            : null,
+        };
+      })
+      .sort((a, b) => b.netPremium - a.netPremium)
+      .slice(0, 6);
 
-        // Get call options for nearest expiry
-        const chain = await yf.options(ticker, { date: expiries[0] });
-        const calls = chain.calls || [];
-        const atmCall = calls.find(c => Math.abs((c.strike || 0) - (quote.regularMarketPrice || 0)) < 5);
-
-        if (atmCall) {
-          const { prob } = calcProb(
-            quote.regularMarketPrice,
-            atmCall.strike,
-            atmCall.impliedVolatility || 0.3,
-            (new Date(expiries[0]) - new Date()) / 86400000 / 365
-          );
-
-          picks.push({
-            ticker,
-            price: quote.regularMarketPrice,
-            strike: atmCall.strike,
-            expiry: expiries[0],
-            callPrice: atmCall.lastPrice || atmCall.bid || 0,
-            prob: Math.round(prob),
-            daysOut: Math.round((new Date(expiries[0]) - new Date()) / 86400000),
-            flowScore: flowData.signals?.find(s => s.ticker === ticker)?.premium || 0,
-          });
-        }
-      } catch (e) {
-        // Skip on error
-      }
-    }
-
-    // Sort by: probability × flow confidence
-    picks.sort((a, b) => (b.prob * Math.log(b.flowScore + 1)) - (a.prob * Math.log(a.flowScore + 1)));
-
-    res.json({ picks: picks.slice(0, 5) });
+    res.json({ picks });
   } catch (e) {
     res.json({ picks: [], error: e.message });
   }
