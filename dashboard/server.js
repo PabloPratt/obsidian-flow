@@ -170,7 +170,6 @@ app.get('/api/chart/:symbol', async (req, res) => {
 app.get('/api/options/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
-    const { budget = 100, minProb = 60 } = req.query;
     const sym = symbol.toUpperCase();
 
     // Check cache first (5 min TTL)
@@ -179,138 +178,72 @@ app.get('/api/options/:symbol', async (req, res) => {
       return res.json(cached.data);
     }
 
-    const maxCost = parseFloat(budget) * 100; // Convert to cents
-    const minProbability = parseFloat(minProb);
+    // Get smart money flow alerts from Unusual Whales (MUCH more accurate than Greeks)
+    const alertsRes = await fetch(
+      `https://api.unusualwhales.com/api/option-trades/flow-alerts?limit=50&min_premium=50000`,
+      { headers: { Authorization: `Bearer ${process.env.UNUSUAL_WHALES_API_KEY}` } }
+    );
 
-    // Get expirations from Tradier
-    let expiries;
-    try {
-      expiries = await tradier.getExpirations(sym);
-      const today = new Date().toISOString().slice(0, 10);
-      expiries = expiries.filter(d => d > today).slice(0, 8); // Next 8 expirations
-      console.log(`[OPTIONS] ${sym} found ${expiries.length} expirations:`, expiries.slice(0, 3));
-    } catch (e) {
-      console.error(`[OPTIONS ERROR] ${sym} expirations failed:`, e.message);
-      return res.json({ error: `No options data for ${sym}`, detail: e.message });
-    }
+    if (!alertsRes.ok) throw new Error(`Unusual Whales API error: ${alertsRes.status}`);
+    const { data: allAlerts } = await alertsRes.json();
 
-    if (!expiries.length) {
-      console.warn(`[OPTIONS] ${sym} has no future expirations`);
-      return res.json([]);
-    }
+    // Filter to current symbol, calls only (bullish smart money)
+    const smartMoneyCalls = allAlerts
+      .filter(a => a.ticker === sym && a.type === 'call')
+      .map(a => {
+        const ask = parseFloat(a.ask ?? 0);
+        const bid = parseFloat(a.bid ?? 0);
+        const spread = ask - bid;
+        const spreadPct = bid > 0 ? (spread / bid * 100).toFixed(1) : '0';
 
-    // Get current price and earnings warning
-    let currentPrice = 0;
-    let earningsInfo = null;
-    try {
-      const quote = await yf.quote(sym);
-      currentPrice = quote.regularMarketPrice;
-      if (quote.earningsDate) {
-        const earningDate = new Date(quote.earningsDate[0]);
-        const today = new Date();
-        const daysToEarnings = Math.ceil((earningDate - today) / (1000 * 60 * 60 * 24));
-        if (daysToEarnings > 0 && daysToEarnings <= 14) {
-          earningsInfo = `Earnings in ${daysToEarnings}d`;
-        }
-      }
-    } catch { }
+        // Delta approximation from IV
+        const iv = parseFloat(a.iv_end ?? 0);
+        const underlying = parseFloat(a.underlying_price ?? 0);
+        const strike = parseFloat(a.strike ?? 0);
 
-    // Search ALL expirations using REAL Tradier Greeks
-    let allOptions = [];
-    let maxPainByExpiry = {};
+        // Simple delta: ITM distance / (underlying * IV)
+        const itmDistance = Math.max(underlying - strike, 0);
+        const vol = iv || 0.25; // Default to 25% if missing
+        const estimatedDelta = Math.min(0.99, Math.max(0.01, itmDistance / (underlying * vol)));
+        const prob = Math.round(estimatedDelta * 100);
 
-    for (const exp of expiries) {
-      try {
-        const chain = await tradier.getOptionsChain(sym, exp, true); // greeks=true
-        console.log(`[OPTIONS] ${sym}/${exp}: Got ${chain?.length ?? 0} options from Tradier`);
+        const maxLoss = +(ask * 100).toFixed(0);
+        const breakeven = +(strike + ask).toFixed(2);
+        const targetPrice = +(strike + ask + (ask * 0.5)).toFixed(2);
 
-        // Calculate max pain for this expiry
-        let strikesByOI = [];
-        chain
-          .filter(opt => opt.option_type === 'call')
-          .forEach(opt => {
-            strikesByOI.push({
-              strike: opt.strike,
-              oi: (opt.open_interest ?? 0) + (opt.open_interest ?? 0),
-            });
-          });
+        return {
+          ticker: sym,
+          strike,
+          expiry: a.expiry,
+          bid: +bid.toFixed(2),
+          ask: +ask.toFixed(2),
+          spread: +spread.toFixed(2),
+          spreadPct: +spreadPct,
+          cost: Math.round(ask * 100),
+          volume: parseInt(a.volume ?? 0),
+          openInterest: parseInt(a.open_interest ?? 0),
+          iv: +(iv * 100).toFixed(1),
+          prob,
+          delta: +estimatedDelta.toFixed(3),
+          itm: underlying > strike,
+          smartMoneyPremium: parseInt(a.total_premium ?? 0),
+          smartMoneySignal: a.alert_rule,
+          maxLoss,
+          breakeven,
+          targetPrice,
+        };
+      })
+      .sort((a, b) => b.smartMoneyPremium - a.smartMoneyPremium)
+      .slice(0, 25);
 
-        if (strikesByOI.length > 0) {
-          strikesByOI.sort((a, b) => b.oi - a.oi);
-          maxPainByExpiry[exp] = strikesByOI[0].strike;
-        }
+    console.log(`[OPTIONS] ${sym}: Found ${smartMoneyCalls.length} smart money calls from Unusual Whales`);
 
-        const calls = chain.filter(opt => opt.option_type === 'call');
-        const validCalls = calls.filter(opt => {
-          const ask = opt.ask ?? 0;
-          return ask > 0.01 && ask * 100 <= maxCost;
-        });
-
-        console.log(`[OPTIONS] ${sym}/${exp}: ${calls.length} calls, ${validCalls.length} valid by price (budget=$${budget})`);
-
-        let passedProb = 0;
-        validCalls.forEach(opt => {
-            // Use REAL delta from Tradier (already ITM probability)
-            const prob = Math.round((opt.delta ?? 0) * 100);
-            if (prob >= minProbability) {
-              passedProb++;
-            }
-              const bid = opt.bid ?? 0;
-              const ask = opt.ask ?? 0;
-              const spread = ask - bid;
-              const spreadPct = bid > 0 ? (spread / bid * 100).toFixed(1) : '0';
-
-              // Risk metrics
-              const maxLoss = +(ask * 100).toFixed(0); // Worst case: lose entire premium
-              const breakeven = +(opt.strike + ask).toFixed(2); // Strike + premium paid
-              const targetProfit = +(ask * 0.5).toFixed(2); // 50% profit target
-              const targetPrice = +(opt.strike + ask + targetProfit).toFixed(2); // Price to exit at 50% gain
-
-              allOptions.push({
-                ticker: sym,
-                strike: opt.strike,
-                expiry: exp,
-                bid: +bid.toFixed(2),
-                ask: +ask.toFixed(2),
-                spread: +spread.toFixed(2),
-                spreadPct: +spreadPct,
-                cost: Math.round(ask * 100),
-                volume: opt.volume ?? 0,
-                openInterest: opt.open_interest ?? 0,
-                iv: opt.implied_volatility ? +(opt.implied_volatility * 100).toFixed(1) : null,
-                prob,
-                delta: +(opt.delta ?? 0).toFixed(3),
-                gamma: +(opt.gamma ?? 0).toFixed(4),
-                theta: +(opt.theta ?? 0).toFixed(3),
-                vega:  +(opt.vega ?? 0).toFixed(3),
-                itm: (opt.delta ?? 0) >= 0.5,
-                maxPain: maxPainByExpiry[exp] ?? null,
-                // Risk metrics
-                maxLoss,
-                breakeven,
-                targetPrice,
-                earningsWarning: earningsInfo,
-              });
-            }
-          });
-        console.log(`[OPTIONS] ${sym}/${exp}: ${passedProb} passed prob filter (>=${minProbability}%)`);
-      } catch (e) {
-        console.error(`[OPTIONS] Chain failed for ${sym}/${exp}:`, e.message);
-      }
-    }
-
-    console.log(`[OPTIONS] ${sym}: Found ${allOptions.length} contracts after all filtering (minProb=${minProbability}%, budget=$${budget})`);
-
-    // Sort: ITM first (highest delta), then by delta
-    allOptions.sort((a, b) => {
-      if (a.itm !== b.itm) return b.itm ? 1 : -1;
-      return b.delta - a.delta;
-    });
-
-    const result = allOptions.slice(0, 25);
-    optionsCache.set(sym, { data: result, ts: Date.now() });
-    res.json(result);
-  } catch(e) { res.status(500).json({ error: e.message }); }
+    optionsCache.set(sym, { data: smartMoneyCalls, ts: Date.now() });
+    res.json(smartMoneyCalls);
+  } catch(e) {
+    console.error(`[OPTIONS] Error:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/flow', async (req, res) => {
