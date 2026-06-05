@@ -25,20 +25,6 @@ const wss    = new WebSocketServer({ server });
 app.use(express.static(join(__dirname, 'public')));
 app.use(express.json());
 
-// ── Black-Scholes helpers ──────────────────────────────────────────────────────
-function normCDF(x) {
-  const a=[0.254829592,-0.284496736,1.421413741,-1.453152027,1.061405429],p=0.3275911,sign=x<0?-1:1;
-  x=Math.abs(x)/Math.sqrt(2);
-  const t=1/(1+p*x),y=1-(((((a[4]*t+a[3])*t+a[2])*t+a[1])*t+a[0])*t*Math.exp(-x*x));
-  return 0.5*(1+sign*y);
-}
-function calcProb(S,K,iv,T,r=0.045) {
-  if(T<=0||iv<=0||S<=0) return {prob:0,delta:0};
-  const d1=(Math.log(S/K)+(r+0.5*iv*iv)*T)/(iv*Math.sqrt(T));
-  const d2=d1-iv*Math.sqrt(T);
-  return { prob:+(normCDF(d2)*100).toFixed(1), delta:+(normCDF(d1)*100).toFixed(1) };
-}
-
 // ── WebSocket broadcast ────────────────────────────────────────────────────────
 function broadcast(type, data) {
   const msg = JSON.stringify({ type, data, ts: Date.now() });
@@ -184,7 +170,7 @@ app.get('/api/chart/:symbol', async (req, res) => {
 app.get('/api/options/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
-    const { budget = 100 } = req.query;
+    const { budget = 100, minProb = 60 } = req.query;
     const sym = symbol.toUpperCase();
 
     // Check cache first (5 min TTL)
@@ -193,62 +179,65 @@ app.get('/api/options/:symbol', async (req, res) => {
       return res.json(cached.data);
     }
 
-    // Get live price
-    let livePrice;
-    try {
-      const q = await yf.quote(sym);
-      livePrice = q.regularMarketPrice;
-    } catch { return res.json([]); }
-
-    const today = new Date();
     const maxCost = parseFloat(budget) * 100; // Convert to cents
+    const minProbability = parseFloat(minProb);
 
-    // Get all expiration dates
-    let expiries = [];
+    // Get expirations from Tradier
+    let expiries;
     try {
-      const base = await yf.options(symbol.toUpperCase());
-      expiries = (base.expirationDates ?? [])
-        .map(d => d.toISOString().slice(0,10))
-        .filter(d => d > today.toISOString().slice(0,10))
-        .slice(0, 8); // First 8 expirations
-    } catch { return res.json([]); }
+      expiries = await tradier.getExpirations(sym);
+      const today = new Date().toISOString().slice(0, 10);
+      expiries = expiries.filter(d => d > today).slice(0, 8); // Next 8 expirations
+    } catch (e) {
+      return res.json({ error: `No options data for ${sym}`, detail: e.message });
+    }
 
     if (!expiries.length) return res.json([]);
 
-    // Search across ALL expiries for best 60%+ ITM options
+    // Search ALL expirations using REAL Tradier Greeks
     let allOptions = [];
     for (const exp of expiries) {
       try {
-        const chain = await yf.options(symbol.toUpperCase(), { date: new Date(exp) });
-        const calls = chain.options?.[0]?.calls ?? [];
-        const T = Math.max((new Date(exp) - today) / 1000 / 86400 / 365, 0.001);
+        const chain = await tradier.getOptionsChain(sym, exp, true); // greeks=true
 
-        calls
-          .filter(c => (c.ask ?? 0) > 0.01 && (c.ask ?? 0) * 100 <= maxCost && (c.volume ?? 0) > 0)
-          .forEach(c => {
-            const { prob } = calcProb(livePrice, c.strike, c.impliedVolatility ?? 0.4, T);
-            const isITM = livePrice > c.strike;
-            if (prob >= 60) { // Only 60%+ probability
+        chain
+          .filter(opt => opt.option_type === 'call')
+          .filter(opt => {
+            const ask = opt.ask ?? 0;
+            return ask > 0.01 && ask * 100 <= maxCost && (opt.volume ?? 0) > 0;
+          })
+          .forEach(opt => {
+            // Use REAL delta from Tradier (already ITM probability)
+            const prob = Math.round((opt.delta ?? 0) * 100);
+            if (prob >= minProbability) {
               allOptions.push({
-                ticker: symbol.toUpperCase(),
-                strike: c.strike,
+                ticker: sym,
+                strike: opt.strike,
                 expiry: exp,
-                ask: c.ask,
-                cost: Math.round((c.ask ?? 0) * 100),
-                volume: c.volume ?? 0,
-                iv: c.impliedVolatility ? +(c.impliedVolatility * 100).toFixed(0) : null,
+                ask: opt.ask,
+                bid: opt.bid,
+                cost: Math.round((opt.ask ?? 0) * 100),
+                volume: opt.volume ?? 0,
+                iv: opt.implied_volatility ? +(opt.implied_volatility * 100).toFixed(1) : null,
                 prob,
-                itm: isITM,
+                delta: +(opt.delta ?? 0).toFixed(3),
+                gamma: +(opt.gamma ?? 0).toFixed(4),
+                theta: +(opt.theta ?? 0).toFixed(3),
+                vega:  +(opt.vega ?? 0).toFixed(3),
+                itm: (opt.delta ?? 0) >= 0.5,
               });
             }
           });
-      } catch { }
+      } catch (e) {
+        // Skip expiration if Tradier fails
+        console.error(`Options chain failed for ${sym} / ${exp}:`, e.message);
+      }
     }
 
-    // Sort: ITM first (highest prob), then by probability
-    allOptions.sort((a,b) => {
+    // Sort: ITM first (highest delta), then by delta
+    allOptions.sort((a, b) => {
       if (a.itm !== b.itm) return b.itm ? 1 : -1;
-      return b.prob - a.prob;
+      return b.delta - a.delta;
     });
 
     const result = allOptions.slice(0, 25);
