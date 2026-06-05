@@ -1,0 +1,25 @@
+{
+  "buildCommand": "npm install",
+  "serverless": true,
+  "functions": {
+    "dashboard/server.js": {
+      "runtime": "nodejs18.x",
+      "maxDuration": 30
+    }
+  },
+  "env": {
+    "ANTHROPIC_API_KEY": "@anthropic_api_key",
+    "UNUSUAL_WHALES_API_KEY": "@unusual_whales_api_key",
+    "ALPACA_API_KEY": "@alpaca_api_key",
+    "ALPACA_SECRET_KEY": "@alpaca_secret_key",
+    "TRADIER_TOKEN": "@tradier_token",
+    "TRADIER_ACCOUNT_ID": "@tradier_account_id",
+    "TRADIER_ENV": "sandbox"
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "/dashboard/server.js"
+    }
+  ]
+}
