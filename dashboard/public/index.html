@@ -272,9 +272,7 @@
   <div class="nav-links">
     <button class="nav-link active" onclick="showPage('terminal',this)">Terminal</button>
     <button class="nav-link" onclick="showPage('picks',this)">Spotlight Picks</button>
-    <button class="nav-link" onclick="showPage('algo',this)">Algo Signals</button>
     <button class="nav-link" onclick="showPage('news',this)">News Feed</button>
-    <button class="nav-link" onclick="showPage('account',this)">Portfolio</button>
   </div>
   <div class="nav-right">
     <div style="display:flex;gap:16px;" id="hdr-stats">
@@ -411,24 +409,6 @@
 </div>
 
 <!-- ═══ ALGO SIGNALS PAGE ════════════════════════════════════════════════════════ -->
-<div class="page" id="page-algo">
-  <div style="width:100%;max-width:1200px;margin:0 auto;">
-    <div style="margin-bottom:20px;">
-      <div style="font-size:18px;font-weight:700;margin-bottom:4px;">🤖 ParadoxAlgo Signals</div>
-      <div style="font-size:12px;color:var(--muted);">Observe & learn from live trading signals · Real-time performance tracking</div>
-    </div>
-    <div class="algo-header" id="algo-stats">
-      <div class="algo-stat"><div class="algo-stat-label">Total Signals</div><div class="algo-stat-value" id="stat-total">—</div></div>
-      <div class="algo-stat"><div class="algo-stat-label">Win Rate</div><div class="algo-stat-value" id="stat-winrate">—</div></div>
-      <div class="algo-stat"><div class="algo-stat-label">Total P&L</div><div class="algo-stat-value" id="stat-pnl">—</div></div>
-      <div class="algo-stat"><div class="algo-stat-label">Avg Trade</div><div class="algo-stat-value" id="stat-avg">—</div></div>
-    </div>
-    <div id="algo-signals-list" style="max-height:600px;overflow-y:auto;">
-      <div class="algo-empty">Waiting for ParadoxAlgo signals...</div>
-    </div>
-  </div>
-</div>
-
 <!-- ═══ NEWS PAGE ═══════════════════════════════════════════════════════════════ -->
 <div class="page" id="page-news">
   <div style="width:100%">
@@ -443,17 +423,6 @@
       </div>
     </div>
     <div class="news-grid" id="news-grid"><div class="loading spin" style="grid-column:1/-1">Loading news</div></div>
-  </div>
-</div>
-
-<!-- ═══ ACCOUNT PAGE ══════════════════════════════════════════════════════════ -->
-<div class="page" id="page-account">
-  <div style="width:100%">
-    <div class="acct-header">
-      <div class="acct-title">Portfolio & Accounts</div>
-      <div style="font-size:12px;color:var(--sub);margin-top:4px">Paper trading · Live crypto · Connected brokers</div>
-    </div>
-    <div class="acct-body" id="acct-body"><div class="loading spin" style="grid-column:1/-1">Loading accounts</div></div>
   </div>
 </div>
 

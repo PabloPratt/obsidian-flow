@@ -188,11 +188,16 @@ app.get('/api/options/:symbol', async (req, res) => {
       expiries = await tradier.getExpirations(sym);
       const today = new Date().toISOString().slice(0, 10);
       expiries = expiries.filter(d => d > today).slice(0, 8); // Next 8 expirations
+      console.log(`[OPTIONS] ${sym} found ${expiries.length} expirations:`, expiries.slice(0, 3));
     } catch (e) {
+      console.error(`[OPTIONS ERROR] ${sym} expirations failed:`, e.message);
       return res.json({ error: `No options data for ${sym}`, detail: e.message });
     }
 
-    if (!expiries.length) return res.json([]);
+    if (!expiries.length) {
+      console.warn(`[OPTIONS] ${sym} has no future expirations`);
+      return res.json([]);
+    }
 
     // Get current price and earnings warning
     let currentPrice = 0;
@@ -217,6 +222,7 @@ app.get('/api/options/:symbol', async (req, res) => {
     for (const exp of expiries) {
       try {
         const chain = await tradier.getOptionsChain(sym, exp, true); // greeks=true
+        console.log(`[OPTIONS] ${sym}/${exp}: Got ${chain?.length ?? 0} options from Tradier`);
 
         // Calculate max pain for this expiry
         let strikesByOI = [];
@@ -234,16 +240,21 @@ app.get('/api/options/:symbol', async (req, res) => {
           maxPainByExpiry[exp] = strikesByOI[0].strike;
         }
 
-        chain
-          .filter(opt => opt.option_type === 'call')
-          .filter(opt => {
-            const ask = opt.ask ?? 0;
-            return ask > 0.01 && ask * 100 <= maxCost && (opt.volume ?? 0) > 0;
-          })
-          .forEach(opt => {
+        const calls = chain.filter(opt => opt.option_type === 'call');
+        const validCalls = calls.filter(opt => {
+          const ask = opt.ask ?? 0;
+          return ask > 0.01 && ask * 100 <= maxCost;
+        });
+
+        console.log(`[OPTIONS] ${sym}/${exp}: ${calls.length} calls, ${validCalls.length} valid by price (budget=$${budget})`);
+
+        let passedProb = 0;
+        validCalls.forEach(opt => {
             // Use REAL delta from Tradier (already ITM probability)
             const prob = Math.round((opt.delta ?? 0) * 100);
             if (prob >= minProbability) {
+              passedProb++;
+            }
               const bid = opt.bid ?? 0;
               const ask = opt.ask ?? 0;
               const spread = ask - bid;
@@ -282,11 +293,13 @@ app.get('/api/options/:symbol', async (req, res) => {
               });
             }
           });
+        console.log(`[OPTIONS] ${sym}/${exp}: ${passedProb} passed prob filter (>=${minProbability}%)`);
       } catch (e) {
-        // Skip expiration if Tradier fails
-        console.error(`Options chain failed for ${sym} / ${exp}:`, e.message);
+        console.error(`[OPTIONS] Chain failed for ${sym}/${exp}:`, e.message);
       }
     }
+
+    console.log(`[OPTIONS] ${sym}: Found ${allOptions.length} contracts after all filtering (minProb=${minProbability}%, budget=$${budget})`);
 
     // Sort: ITM first (highest delta), then by delta
     allOptions.sort((a, b) => {
