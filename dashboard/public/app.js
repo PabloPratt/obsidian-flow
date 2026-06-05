@@ -370,6 +370,7 @@ function openTab(name, btn) {
   if (name === 'flow')     loadFlow();
   if (name === 'news-tab') loadNewsTab(activeTicker);
   if (name === 'intel')    loadIntel();
+  if (name === 'darkpool') loadDarkPool();
 }
 
 // ── Top Picks (terminal pane) ─────────────────────────────────────────────────
@@ -614,6 +615,49 @@ async function loadNewsTab(ticker) {
     }).join('');
   } catch(e) {
     document.getElementById('news-tab-content').innerHTML = `<div style="color:var(--red);padding:12px">${e.message}</div>`;
+  }
+}
+
+// ── Dark Pool Tab ─────────────────────────────────────────────────────────────
+async function loadDarkPool() {
+  const el = document.getElementById('darkpool-list');
+  el.innerHTML = `<div class="loading spin">Loading dark pool for ${activeTicker}</div>`;
+  try {
+    const trades = await fetch(`/api/darkpool/${activeTicker}`).then(r=>r.json());
+    if (!trades.length) {
+      el.innerHTML = `<div style="color:var(--muted);padding:20px;text-align:center">No dark pool data for ${activeTicker}</div>`;
+      return;
+    }
+    const totalPremium = trades.reduce((s,t) => s + t.premium, 0);
+    const bullish = trades.filter(t => t.sentiment === 'bullish').reduce((s,t) => s + t.premium, 0);
+    const bullPct = totalPremium ? Math.round(bullish / totalPremium * 100) : 0;
+    el.innerHTML = `
+      <div style="background:rgba(122,61,237,0.1);border:1px solid #7c3aed33;border-radius:6px;padding:10px;margin-bottom:10px;font-size:11px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+          <span style="color:var(--muted)">Total Dark Pool Volume</span>
+          <span style="font-weight:700">$${(totalPremium/1000000).toFixed(2)}M</span>
+        </div>
+        <div style="display:flex;justify-content:space-between">
+          <span style="color:var(--muted)">Bullish Sentiment</span>
+          <span style="font-weight:700;color:${bullPct>50?'#34d399':'#f87171'}">${bullPct}%</span>
+        </div>
+      </div>
+      ${trades.map(t => {
+        const bull = t.sentiment === 'bullish';
+        const prem = t.premium >= 1000000 ? `$${(t.premium/1000000).toFixed(2)}M` : `$${(t.premium/1000).toFixed(0)}K`;
+        const age  = timeAgo(new Date(t.time));
+        return `<div class="card" style="margin-bottom:6px">
+          <div class="row">
+            <div>
+              <span style="font-size:12px;font-weight:700;color:${bull?'#34d399':'#f87171'}">${bull?'▲':'▼'} ${prem}</span>
+              <span style="font-size:9px;color:var(--muted);margin-left:8px">${age}</span>
+            </div>
+            <span style="font-size:11px;color:var(--muted)">${t.size?.toLocaleString()} @ $${t.price?.toFixed(2)}</span>
+          </div>
+        </div>`;
+      }).join('')}`;
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--red);padding:12px">${e.message}</div>`;
   }
 }
 

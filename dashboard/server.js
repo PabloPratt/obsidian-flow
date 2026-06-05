@@ -583,6 +583,27 @@ app.get('/api/sectors', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Dark Pool Flow ────────────────────────────────────────────────────────────
+app.get('/api/darkpool/:symbol', async (req, res) => {
+  try {
+    const sym = req.params.symbol.toUpperCase();
+    const dpRes = await fetch(
+      `https://api.unusualwhales.com/api/darkpool/${sym}?limit=20`,
+      { headers: { Authorization: `Bearer ${process.env.UNUSUAL_WHALES_API_KEY}` } }
+    );
+    if (!dpRes.ok) return res.json([]);
+    const { data } = await dpRes.json();
+    const trades = (data ?? []).map(t => ({
+      price: parseFloat(t.price),
+      size: parseInt(t.size),
+      premium: parseFloat(t.price) * parseInt(t.size),
+      time: t.executed_at,
+      sentiment: parseFloat(t.price) > parseFloat(t.nbbo_ask ?? t.price) ? 'bullish' : 'bearish',
+    })).slice(0, 15);
+    res.json(trades);
+  } catch(e) { res.json([]); }
+});
+
 // ── Market Movers ─────────────────────────────────────────────────────────────
 let moversCache = { data: null, ts: 0 };
 app.get('/api/movers', async (req, res) => {
