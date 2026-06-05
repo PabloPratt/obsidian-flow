@@ -9,9 +9,11 @@ let activeTF     = '5Min';
 let activeBroker = 'alpaca';
 let ws;
 let priceCache   = {};
+let prevPriceCache = {}; // For alert detection
 let currentOrder = null;
 let chartData = []; // Track loaded bars for real-time updates
 let lastUpdate = 0; // Last time we updated the chart
+const alertedThisCycle = new Set(); // Prevent duplicate alerts
 
 const DEFAULT_WATCHLIST = ['SPY','QQQ','NVDA','AMD','META','AAPL','TSLA','MSFT',
                            'DVN','OXY','COIN','BAC','SOFI','NIO','BBAI','PLTR'];
@@ -167,6 +169,19 @@ function connectWS() {
     try {
       const { type, data } = JSON.parse(e.data);
       if (type === 'prices') {
+        // Check for big movers before updating cache
+        for (const [sym, q] of Object.entries(data)) {
+          const prev = prevPriceCache[sym];
+          if (prev?.price && q.price && !alertedThisCycle.has(sym)) {
+            const pct = (q.price - prev.price) / prev.price * 100;
+            if (Math.abs(pct) >= 2) {
+              alertedThisCycle.add(sym);
+              showToast(`${sym} ${pct>0?'▲':'▼'} ${Math.abs(pct).toFixed(1)}% — $${q.price.toFixed(2)}`, pct>0?'ok':'err');
+              setTimeout(() => alertedThisCycle.delete(sym), 300000); // re-alert after 5min
+            }
+          }
+        }
+        prevPriceCache = { ...priceCache };
         priceCache = data;
         renderWatchlist(data);
         updateHeader(data);
