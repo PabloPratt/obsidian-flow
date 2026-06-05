@@ -15,6 +15,8 @@ import { fetchOptionsFlow } from '../src/agents/options-flow.js';
 import { fetchEIASignals }  from '../src/agents/eia.js';
 import { fetchFREDSignals } from '../src/agents/fred.js';
 import { runMarketIntelligence } from '../src/agents/market-intelligence.js';
+import { calculateMetrics, identifyPatterns, recommendAdjustments } from '../src/agents/performance-tracker.js';
+import { executeOptionsTrade } from '../src/agents/execution.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const yf = new YahooFinance({ suppressNotices: ['yahooSurvey','ripHistorical'] });
@@ -843,6 +845,47 @@ Be direct. No fluff. Use dollar amounts.`;
     } catch { }
   }
   res.status(503).json({ error: 'AI analysis unavailable' });
+});
+
+// ── Performance Tracking ──────────────────────────────────────────────────────
+app.get('/api/performance', (req, res) => {
+  try {
+    const metrics = calculateMetrics(algoSignals);
+    const patterns = identifyPatterns(algoSignals);
+    const recommendations = recommendAdjustments(metrics, patterns);
+    res.json({ metrics, patterns, recommendations });
+  } catch(e) { res.json({ error: e.message }); }
+});
+
+// ── Auto-Execute High-Conviction Picks ─────────────────────────────────────────
+app.post('/api/auto-execute', authAlgo, async (req, res) => {
+  try {
+    const { picks, account } = req.body;
+    if (!picks?.length || !account?.balance) {
+      return res.status(400).json({ error: 'Missing picks or account data' });
+    }
+
+    const executed = [];
+    for (const pick of picks) {
+      if (pick.bullRatio >= 70) { // Only execute strong conviction
+        const result = await executeOptionsTrade(pick, account);
+        if (result.success) executed.push(result);
+      }
+    }
+
+    res.json({ executed, count: executed.length });
+  } catch(e) { res.json({ error: e.message }); }
+});
+
+// ── Webhook for High-Risk Alerts ───────────────────────────────────────────────
+app.post('/api/alerts/drawdown', (req, res) => {
+  const { drawdown, threshold, action } = req.body;
+  if (Math.abs(drawdown) > threshold) {
+    // Send alert (email, Slack, SMS)
+    console.log(`[ALERT] Drawdown ${drawdown}% exceeds ${threshold}% - ${action}`);
+    broadcast('alert', { type: 'drawdown', drawdown, action });
+  }
+  res.json({ received: true });
 });
 
 // ── Market Intelligence Agent ─────────────────────────────────────────────────
