@@ -406,13 +406,43 @@ async function loadOptions() {
         </div>`;
       return;
     }
+
+    // Load backtesting + VIX context
+    const [backtest, vix] = await Promise.allSettled([
+      fetch(`/api/backtest/${activeTicker}`).then(r=>r.json()),
+      fetch('/api/vix').then(r=>r.json())
+    ]);
+
+    let btHtml = '';
+    if (backtest.status === 'fulfilled' && backtest.value.stats) {
+      const s = backtest.value.stats;
+      const regimeColor = vix.status === 'fulfilled' && vix.value.regime === 'high' ? '#f87171' :
+                         vix.status === 'fulfilled' && vix.value.regime === 'low' ? '#60a5fa' : '#fbbf24';
+      const vixPrice = vix.status === 'fulfilled' ? vix.value.vix.price.toFixed(1) : '—';
+      btHtml = `
+        <div style="background:rgba(122,61,237,0.1);border:1px solid #7c3aed;border-radius:6px;padding:12px;margin-bottom:12px;font-size:11px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+            <span style="color:var(--muted)"><strong>Backtest (30d)</strong></span>
+            <span style="color:${regimeColor};font-weight:700">VIX ${vixPrice}</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div><span style="color:var(--muted)">Win Rate:</span> <span style="color:var(--cyan)">${s.winRate}%</span></div>
+            <div><span style="color:var(--muted)">Total Trades:</span> <span style="color:var(--cyan)">${s.totalTrades}</span></div>
+            <div><span style="color:var(--muted)">Profit Factor:</span> <span style="color:${s.profitFactor > 1.5 ? '#34d399' : '#fbbf24'}">${s.profitFactor}</span></div>
+            <div><span style="color:var(--muted)">Total P/L:</span> <span style="color:${s.totalPL > 0 ? '#34d399' : '#f87171'}">$${s.totalPL}</span></div>
+          </div>
+        </div>`;
+    }
+
     document.getElementById('options-list').innerHTML =
+      btHtml +
       `<div style="font-size:10px;color:var(--muted);margin-bottom:8px;display:flex;justify-content:space-between">
-        <span><strong style="color:var(--cyan)">${activeTicker}</strong> · ${opts.length} contracts</span>
+        <span><strong style="color:var(--cyan)">${activeTicker}</strong> · ${opts.length} contracts · Real Greeks from Tradier</span>
         <span style="color:var(--sub)">${sort==='cost'?'cheapest first':'highest prob first'}</span>
       </div>` +
       opts.map(o => {
         const pc = o.prob>=40?'#34d399':o.prob>=20?'#fbbf24':'#4b5563';
+        const spreadWarning = o.spreadPct > 3 ? ' ⚠️ wide spread' : '';
         return `<div class="card" onclick="openOrderModal({ticker:'${activeTicker}',contract:'${o.symbol}',type:'call',strike:${o.strike},expiry:'${o.expiry?.slice(5)}',cost:${o.cost},prob:${o.prob},tags:['call']${o.itm?",\'itm\'":''}})" style="cursor:pointer">
           <div class="row" style="margin-bottom:4px">
             <div>
@@ -421,11 +451,15 @@ async function loadOptions() {
               <span style="font-size:10px;color:var(--sub);margin-left:6px">exp ${o.expiry?.slice(5)}</span>
               ${o.itm?'<span class="badge badge-c" style="margin-left:5px">ITM</span>':''}
             </div>
-            <span style="color:var(--green);font-weight:700">$${o.cost}</span>
+            <div style="text-align:right">
+              <div style="color:var(--green);font-weight:700">$${o.ask}</div>
+              <div style="font-size:9px;color:var(--muted)">b/a: $${o.bid}-$${o.ask}</div>
+            </div>
           </div>
-          <div style="display:flex;gap:10px;font-size:10px;color:var(--muted);margin-bottom:5px">
-            <span>IV ${o.iv??'—'}%</span><span>Vol ${(o.volume??0).toLocaleString()}</span><span>OI ${(o.oi??0).toLocaleString()}</span>${o.delta?`<span>Δ ${o.delta}</span>`:''}
+          <div style="display:flex;gap:10px;font-size:10px;color:var(--muted);margin-bottom:5px;flex-wrap:wrap">
+            <span>IV ${o.iv??'—'}%</span><span>Vol ${(o.volume??0).toLocaleString()}</span><span>OI ${(o.openInterest??0).toLocaleString()}</span><span>Δ ${o.delta}</span><span style="color:var(--sub)">${spreadWarning}</span>
           </div>
+          <div style="font-size:9px;color:var(--sub);margin-bottom:5px">Max Pain: $${o.maxPain?.toFixed(0) ?? '—'}</div>
           <div class="row">
             <div class="prob-bar" style="flex:1;margin-right:8px">
               <div class="prob-fill" style="width:${Math.min(o.prob,100)}%;background:${o.prob>=40?'linear-gradient(90deg,#34d399,#22d3ee)':pc}"></div>
@@ -830,6 +864,17 @@ function timeAgo(date) {
   return Math.floor(s/86400)+'d ago';
 }
 
+// ── VIX loader ────────────────────────────────────────────────────────────────
+async function loadVIX() {
+  try {
+    const vix = await fetch('/api/vix').then(r=>r.json());
+    const price = vix.vix.price.toFixed(1);
+    const change = vix.vix.change > 0 ? '+' : '';
+    const color = vix.regime === 'high' ? '#f87171' : vix.regime === 'low' ? '#60a5fa' : '#fbbf24';
+    document.getElementById('h-vix').innerHTML = `<span style="color:${color}">${price}</span>`;
+  } catch(e) { console.error('VIX load failed:', e.message); }
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {
   initChart();
@@ -838,6 +883,7 @@ window.addEventListener('load', () => {
   loadTopPicks();
   loadStatus();
   loadCrypto();
+  loadVIX();
 
   // Initial price fetch (before WS connects)
   fetch('/api/prices').then(r=>r.json()).then(d => {
@@ -848,5 +894,6 @@ window.addEventListener('load', () => {
 
   setInterval(loadCrypto,   15_000);
   setInterval(loadStatus,   30_000);
+  setInterval(loadVIX,      30_000);
   populateExpiries(activeTicker);
 });

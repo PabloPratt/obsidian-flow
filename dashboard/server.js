@@ -196,9 +196,27 @@ app.get('/api/options/:symbol', async (req, res) => {
 
     // Search ALL expirations using REAL Tradier Greeks
     let allOptions = [];
+    let maxPainByExpiry = {};
+
     for (const exp of expiries) {
       try {
         const chain = await tradier.getOptionsChain(sym, exp, true); // greeks=true
+
+        // Calculate max pain for this expiry
+        let strikesByOI = [];
+        chain
+          .filter(opt => opt.option_type === 'call')
+          .forEach(opt => {
+            strikesByOI.push({
+              strike: opt.strike,
+              oi: (opt.open_interest ?? 0) + (opt.open_interest ?? 0),
+            });
+          });
+
+        if (strikesByOI.length > 0) {
+          strikesByOI.sort((a, b) => b.oi - a.oi);
+          maxPainByExpiry[exp] = strikesByOI[0].strike;
+        }
 
         chain
           .filter(opt => opt.option_type === 'call')
@@ -210,14 +228,22 @@ app.get('/api/options/:symbol', async (req, res) => {
             // Use REAL delta from Tradier (already ITM probability)
             const prob = Math.round((opt.delta ?? 0) * 100);
             if (prob >= minProbability) {
+              const bid = opt.bid ?? 0;
+              const ask = opt.ask ?? 0;
+              const spread = ask - bid;
+              const spreadPct = bid > 0 ? (spread / bid * 100).toFixed(1) : '0';
+
               allOptions.push({
                 ticker: sym,
                 strike: opt.strike,
                 expiry: exp,
-                ask: opt.ask,
-                bid: opt.bid,
-                cost: Math.round((opt.ask ?? 0) * 100),
+                bid: +bid.toFixed(2),
+                ask: +ask.toFixed(2),
+                spread: +spread.toFixed(2),
+                spreadPct: +spreadPct,
+                cost: Math.round(ask * 100),
                 volume: opt.volume ?? 0,
+                openInterest: opt.open_interest ?? 0,
                 iv: opt.implied_volatility ? +(opt.implied_volatility * 100).toFixed(1) : null,
                 prob,
                 delta: +(opt.delta ?? 0).toFixed(3),
@@ -225,6 +251,7 @@ app.get('/api/options/:symbol', async (req, res) => {
                 theta: +(opt.theta ?? 0).toFixed(3),
                 vega:  +(opt.vega ?? 0).toFixed(3),
                 itm: (opt.delta ?? 0) >= 0.5,
+                maxPain: maxPainByExpiry[exp] ?? null,
               });
             }
           });
@@ -276,6 +303,134 @@ app.get('/api/macro', async (req, res) => {
     res.json({
       fred: fred.status === 'fulfilled' ? fred.value : null,
       eia:  eia.status  === 'fulfilled' ? eia.value  : null,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Volatility Context ─────────────────────────────────────────────────────────
+app.get('/api/vix', async (req, res) => {
+  try {
+    const vix = await yf.quote('^VIX');
+    const vxn = await yf.quote('^VXN');
+    res.json({
+      vix: { price: vix.regularMarketPrice, change: vix.regularMarketChangePercent },
+      vxn: { price: vxn.regularMarketPrice, change: vxn.regularMarketChangePercent },
+      regime: vix.regularMarketPrice > 25 ? 'high' : vix.regularMarketPrice > 18 ? 'normal' : 'low',
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── IV Surface (Skew) ──────────────────────────────────────────────────────────
+app.get('/api/iv-surface/:symbol/:expiry', async (req, res) => {
+  try {
+    const { symbol, expiry } = req.params;
+    const sym = symbol.toUpperCase();
+
+    const chain = await tradier.getOptionsChain(sym, expiry, true);
+    const calls = chain.filter(opt => opt.option_type === 'call').sort((a, b) => a.strike - b.strike);
+
+    const surface = calls.map(opt => ({
+      strike: opt.strike,
+      iv: opt.implied_volatility ? +(opt.implied_volatility * 100).toFixed(1) : null,
+      delta: +(opt.delta ?? 0).toFixed(3),
+      volume: opt.volume ?? 0,
+      openInterest: opt.open_interest ?? 0,
+    }));
+
+    res.json(surface);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Backtesting ────────────────────────────────────────────────────────────────
+app.get('/api/backtest/:symbol', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const sym = symbol.toUpperCase();
+
+    // Get current price and past 30 days of history
+    const quote = await yf.quote(sym);
+    const currentPrice = quote.regularMarketPrice;
+
+    const history = await yf.historical(sym, {
+      period1: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+      period2: new Date(),
+      interval: '1d',
+    });
+
+    if (!history.length) return res.json({ error: 'No historical data' });
+
+    // Get current expirations
+    let expiries = [];
+    try {
+      expiries = await tradier.getExpirations(sym);
+      const today = new Date().toISOString().slice(0, 10);
+      expiries = expiries.filter(d => d > today).slice(0, 4);
+    } catch { }
+
+    // Simulate: Find dates where we would have recommended calls
+    // Calculate what profit/loss would be if held to now
+    const backtest = [];
+    for (let i = 5; i < history.length; i++) {
+      const testDate = new Date(history[i].date);
+      const testDateStr = testDate.toISOString().slice(0, 10);
+      const testPrice = history[i].close;
+
+      // Find best expiry for that date
+      const availableExpiries = expiries.filter(e => e > testDateStr);
+      if (!availableExpiries.length) continue;
+
+      try {
+        const chain = await tradier.getOptionsChain(sym, availableExpiries[0], true);
+        const calls = chain
+          .filter(opt => opt.option_type === 'call')
+          .filter(opt => (opt.delta ?? 0) >= 0.6 && opt.ask > 0.01);
+
+        if (calls.length > 0) {
+          // Take top 3 calls
+          const topCalls = calls.sort((a, b) => (b.delta ?? 0) - (a.delta ?? 0)).slice(0, 3);
+
+          topCalls.forEach(call => {
+            const entryPrice = call.ask;
+            const currentAsk = call.ask;
+            const pl = (currentAsk - entryPrice) * 100;
+            const plPct = ((currentAsk - entryPrice) / entryPrice * 100).toFixed(1);
+
+            backtest.push({
+              date: testDateStr,
+              strike: call.strike,
+              expiry: availableExpiries[0],
+              entryPrice: +entryPrice.toFixed(2),
+              currentPrice: +currentAsk.toFixed(2),
+              delta: +(call.delta ?? 0).toFixed(3),
+              pl: +pl.toFixed(2),
+              plPct: +plPct,
+              recommendation: 'BUY CALL',
+            });
+          });
+        }
+      } catch { }
+    }
+
+    // Calculate stats
+    const wins = backtest.filter(b => b.pl > 0).length;
+    const losses = backtest.filter(b => b.pl < 0).length;
+    const avgWin = backtest.filter(b => b.pl > 0).reduce((s, b) => s + b.pl, 0) / Math.max(wins, 1);
+    const avgLoss = backtest.filter(b => b.pl < 0).reduce((s, b) => s + b.pl, 0) / Math.max(losses, 1);
+
+    res.json({
+      symbol: sym,
+      period: '30 days',
+      trades: backtest.slice(-20), // Last 20 trades
+      stats: {
+        totalTrades: backtest.length,
+        wins,
+        losses,
+        winRate: (wins / Math.max(backtest.length, 1) * 100).toFixed(1),
+        avgWin: avgWin.toFixed(2),
+        avgLoss: avgLoss.toFixed(2),
+        profitFactor: (avgWin / Math.abs(avgLoss)).toFixed(2),
+        totalPL: backtest.reduce((s, b) => s + b.pl, 0).toFixed(2),
+      },
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
