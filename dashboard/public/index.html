@@ -337,7 +337,8 @@
   <!-- Right panel -->
   <div class="rp">
     <div class="tabs">
-      <div class="tab on" onclick="openTab('picks',this)">Top Picks</div>
+      <div class="tab on" onclick="openTab('ai-agent',this)">🤖 AI Agent</div>
+      <div class="tab" onclick="openTab('picks',this)">Top Picks</div>
       <div class="tab" onclick="openTab('options',this)">Options</div>
       <div class="tab" onclick="openTab('flow',this)">Flow</div>
       <div class="tab" onclick="openTab('darkpool',this)">Dark Pool</div>
@@ -345,8 +346,21 @@
       <div class="tab" onclick="openTab('intel',this)">Intel</div>
     </div>
 
+    <!-- AI Agent -->
+    <div class="pane on" id="pane-ai-agent">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div>
+          <div style="font-size:14px;font-weight:700">🤖 Market Intelligence</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">Real-time multi-signal synthesis</div>
+        </div>
+        <button onclick="loadAIAgent()" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:6px 12px;font-size:11px;cursor:pointer;font-weight:600">Scan Now</button>
+      </div>
+      <div id="ai-agent-picks"><div class="loading spin">Scanning markets...</div></div>
+      <div id="ai-agent-insight" style="background:rgba(122,61,237,0.15);border:1px solid #7c3aed33;border-radius:6px;padding:12px;margin-top:12px;font-size:10px;color:var(--muted);line-height:1.6;white-space:pre-wrap;display:none"></div>
+    </div>
+
     <!-- Picks -->
-    <div class="pane on" id="pane-picks">
+    <div class="pane" id="pane-picks">
       <div class="loading spin" id="picks-loading">Scanning markets</div>
       <div id="picks-list"></div>
     </div>

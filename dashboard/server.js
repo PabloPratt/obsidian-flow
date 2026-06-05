@@ -14,6 +14,7 @@ import * as quiver     from '../src/agents/quiverquant.js';
 import { fetchOptionsFlow } from '../src/agents/options-flow.js';
 import { fetchEIASignals }  from '../src/agents/eia.js';
 import { fetchFREDSignals } from '../src/agents/fred.js';
+import { runMarketIntelligence } from '../src/agents/market-intelligence.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const yf = new YahooFinance({ suppressNotices: ['yahooSurvey','ripHistorical'] });
@@ -842,6 +843,23 @@ Be direct. No fluff. Use dollar amounts.`;
     } catch { }
   }
   res.status(503).json({ error: 'AI analysis unavailable' });
+});
+
+// ── Market Intelligence Agent ─────────────────────────────────────────────────
+let miCache = { data: null, ts: 0 };
+app.get('/api/market-intelligence', async (req, res) => {
+  try {
+    // Cache for 2 minutes
+    if (miCache.data && Date.now() - miCache.ts < 120000) {
+      return res.json(miCache.data);
+    }
+    const result = await runMarketIntelligence();
+    miCache = { data: result, ts: Date.now() };
+    res.json(result);
+  } catch(e) {
+    console.error('[MI] Error:', e.message);
+    res.json({ picks: [], error: e.message });
+  }
 });
 
 // ── Top Picks (Smart Money + Earnings) ─────────────────────────────────────────

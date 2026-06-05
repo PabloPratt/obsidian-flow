@@ -371,6 +371,7 @@ function openTab(name, btn) {
   if (name === 'news-tab') loadNewsTab(activeTicker);
   if (name === 'intel')    loadIntel();
   if (name === 'darkpool') loadDarkPool();
+  if (name === 'ai-agent') loadAIAgent();
 }
 
 // ── Top Picks (terminal pane) ─────────────────────────────────────────────────
@@ -615,6 +616,61 @@ async function loadNewsTab(ticker) {
     }).join('');
   } catch(e) {
     document.getElementById('news-tab-content').innerHTML = `<div style="color:var(--red);padding:12px">${e.message}</div>`;
+  }
+}
+
+// ── AI Agent Tab ──────────────────────────────────────────────────────────────
+async function loadAIAgent() {
+  const el = document.getElementById('ai-agent-picks');
+  el.innerHTML = `<div class="loading spin">Scanning multi-signal matrix...</div>`;
+  try {
+    const result = await fetch('/api/market-intelligence').then(r => r.json());
+    if (!result.picks || !result.picks.length) {
+      el.innerHTML = `<div style="color:var(--muted);padding:20px;text-align:center">No strong signals detected right now</div>`;
+      document.getElementById('ai-agent-insight').style.display = 'none';
+      return;
+    }
+
+    el.innerHTML = result.picks.map(p => `
+      <div class="card" onclick="selectTicker('${p.ticker}');showPage('terminal',document.querySelector('.nav-link'))" style="cursor:pointer;margin-bottom:8px">
+        <div class="row" style="margin-bottom:6px">
+          <div>
+            <span style="font-size:14px;font-weight:800;color:var(--cyan)">${p.ticker}</span>
+            <span class="badge" style="background:${
+              p.verdict === 'STRONG BUY' ? '#34d399' :
+              p.verdict === 'BUY' ? '#fbbf24' : '#4b5563'
+            };color:#fff;margin-left:8px;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600">${p.verdict}</span>
+          </div>
+          <div style="text-align:right;font-size:13px;font-weight:700;color:var(--accent)">Score: ${p.score}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px;font-size:10px">
+          <div style="background:var(--s2);padding:6px;border-radius:4px;text-align:center">
+            <div style="color:var(--muted)">Bullish %</div>
+            <div style="font-weight:700;color:#34d399">${p.bullRatio}%</div>
+          </div>
+          <div style="background:var(--s2);padding:6px;border-radius:4px;text-align:center">
+            <div style="color:var(--muted)">Call Flow</div>
+            <div style="font-weight:700">$${(p.callFlow/1000).toFixed(0)}K</div>
+          </div>
+          <div style="background:var(--s2);padding:6px;border-radius:4px;text-align:center">
+            <div style="color:var(--muted)">Put Flow</div>
+            <div style="font-weight:700">$${(p.putFlow/1000).toFixed(0)}K</div>
+          </div>
+          <div style="background:var(--s2);padding:6px;border-radius:4px;text-align:center">
+            <div style="color:var(--muted)">Dark Pool</div>
+            <div style="font-weight:700">$${(p.darkFlow/1000000).toFixed(1)}M</div>
+          </div>
+        </div>
+        ${p.earningsIn ? `<div style="background:rgba(248,113,113,0.15);padding:6px;border-radius:4px;font-size:9px;color:#f87171;font-weight:600">⚠️ Earnings in ${p.earningsIn} days</div>` : ''}
+      </div>
+    `).join('');
+
+    if (result.aiInsight) {
+      document.getElementById('ai-agent-insight').textContent = result.aiInsight;
+      document.getElementById('ai-agent-insight').style.display = 'block';
+    }
+  } catch(e) {
+    el.innerHTML = `<div style="color:var(--red);padding:12px">${e.message}</div>`;
   }
 }
 
@@ -1061,6 +1117,7 @@ window.addEventListener('load', () => {
   initChart();
   connectWS();
   renderTerminalPicks();
+  loadAIAgent();
   loadTopPicks();
   loadStatus();
   loadCrypto();
@@ -1076,5 +1133,8 @@ window.addEventListener('load', () => {
   setInterval(loadCrypto,   15_000);
   setInterval(loadStatus,   30_000);
   setInterval(loadVIX,      30_000);
+  setInterval(() => {
+    if (document.querySelector('.pane.on#pane-ai-agent')) loadAIAgent();
+  }, 300_000);
   populateExpiries(activeTicker);
 });
