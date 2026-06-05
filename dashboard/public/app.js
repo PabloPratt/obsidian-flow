@@ -159,7 +159,8 @@ function setTF(tf, btn) {
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWS() {
-  ws = new WebSocket(`ws://${location.host}`);
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}`);
   ws.onopen    = () => {};
   ws.onclose   = () => setTimeout(connectWS, 3000);
   ws.onmessage = e => {
@@ -508,10 +509,50 @@ async function loadOptions() {
             </div>
             <span style="font-weight:700;font-size:12px;color:${pc};min-width:56px;text-align:right">${o.prob}% ITM</span>
           </div>
+          <button onclick="event.stopPropagation();analyzeOption(this,${JSON.stringify(o).replace(/'/g,'&apos;')})" style="width:100%;margin-top:8px;padding:5px;background:rgba(122,61,237,0.2);border:1px solid #7c3aed55;color:var(--accent);font-size:10px;border-radius:4px;cursor:pointer;font-family:inherit">🤖 Ask AI</button>
+          <div class="ai-analysis-box" style="display:none;margin-top:8px;background:rgba(0,0,0,0.3);border:1px solid #7c3aed33;border-radius:4px;padding:8px;font-size:10px;color:var(--muted);white-space:pre-wrap;line-height:1.5"></div>
         </div>`;
       }).join('');
   } catch(e) {
     document.getElementById('options-list').innerHTML = `<div style="color:var(--red);padding:12px">${e.message}</div>`;
+  }
+}
+
+// ── AI Analysis ───────────────────────────────────────────────────────────────
+async function analyzeOption(btn, opt) {
+  const box = btn.nextElementSibling;
+  if (box.style.display !== 'none') { box.style.display = 'none'; btn.textContent = '🤖 Ask AI'; return; }
+
+  btn.textContent = '⏳ Analyzing...';
+  btn.disabled = true;
+  box.style.display = 'block';
+  box.textContent = 'Getting AI analysis...';
+
+  try {
+    const price = priceCache[activeTicker]?.price ?? opt.underlying ?? 0;
+    const data = await fetch('/api/ai/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ticker: activeTicker,
+        strike: opt.strike,
+        expiry: opt.expiry,
+        ask: opt.ask,
+        delta: opt.delta,
+        iv: opt.iv,
+        smartMoneyPremium: opt.smartMoneyPremium ?? 0,
+        signal: opt.smartMoneySignal ?? 'Unknown',
+        currentPrice: price,
+      }),
+    }).then(r => r.json());
+
+    box.textContent = data.analysis ?? data.error ?? 'No analysis returned';
+    btn.textContent = '🤖 Hide AI';
+  } catch(e) {
+    box.textContent = 'Analysis failed: ' + e.message;
+    btn.textContent = '🤖 Ask AI';
+  } finally {
+    btn.disabled = false;
   }
 }
 

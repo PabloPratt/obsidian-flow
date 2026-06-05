@@ -728,6 +728,52 @@ app.get('/api/algo/stats', (req, res) => {
   });
 });
 
+// ── AI Trade Analysis ─────────────────────────────────────────────────────────
+app.post('/api/ai/analyze', async (req, res) => {
+  const { ticker, strike, expiry, ask, delta, iv, smartMoneyPremium, signal, currentPrice } = req.body;
+
+  const models = [
+    { url: 'https://api.anthropic.com/v1/messages', key: process.env.ANTHROPIC_API_KEY, type: 'anthropic' },
+    { url: 'https://api.openai.com/v1/chat/completions', key: process.env.OPENAI_API_KEY, type: 'openai' },
+  ];
+
+  const prompt = `You are a professional options trader. Analyze this trade opportunity and give a brief, direct verdict.
+
+Ticker: ${ticker} @ $${currentPrice}
+Option: $${strike} call expiring ${expiry}
+Ask price: $${ask} (costs $${Math.round(ask*100)} per contract)
+Delta (ITM probability): ${Math.round(delta*100)}%
+Implied Volatility: ${iv}%
+Smart money premium: $${(smartMoneyPremium/1000).toFixed(0)}K (${signal})
+
+Answer in exactly 3 sections:
+VERDICT: [STRONG BUY / BUY / SKIP / AVOID] - one sentence why
+RISK: One sentence on main risk
+EXIT: Specific price target to sell at 50% gain and stop loss level
+
+Be direct. No fluff. Use dollar amounts.`;
+
+  for (const model of models) {
+    if (!model.key) continue;
+    try {
+      let body, headers;
+      if (model.type === 'anthropic') {
+        headers = { 'x-api-key': model.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' };
+        body = JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 300, messages: [{ role: 'user', content: prompt }] });
+      } else {
+        headers = { Authorization: `Bearer ${model.key}`, 'content-type': 'application/json' };
+        body = JSON.stringify({ model: 'gpt-4o-mini', max_tokens: 300, messages: [{ role: 'user', content: prompt }] });
+      }
+      const r = await fetch(model.url, { method: 'POST', headers, body });
+      if (!r.ok) continue;
+      const data = await r.json();
+      const text = model.type === 'anthropic' ? data.content[0].text : data.choices[0].message.content;
+      return res.json({ analysis: text, model: model.type });
+    } catch { }
+  }
+  res.status(503).json({ error: 'AI analysis unavailable' });
+});
+
 // ── Top Picks (Smart Money + Earnings) ─────────────────────────────────────────
 app.get('/api/top-picks', async (req, res) => {
   try {
