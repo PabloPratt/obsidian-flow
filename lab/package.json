@@ -1,0 +1,9 @@
+{
+  "name": "obsidian-flow-lab",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check client.js && node --check server.js"
+  }
+}

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Obsidian Flow Options Engine</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="terminal">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Obsidian Flow</p>
+          <h1>Options Heat Scanner</h1>
+        </div>
+        <div>
+          <div class="provider-status" id="provider-status">Checking data connections...</div>
+          <div class="market-strip" id="market-strip"></div>
+        </div>
+      </header>
+
+      <section class="control-panel" aria-label="Options scan filters">
+        <label>
+          Max cost
+          <input id="max-cost" type="number" min="25" max="1000" step="25" value="250" />
+        </label>
+        <label>
+          Min probability
+          <input id="min-prob" type="number" min="1" max="100" step="1" value="35" />
+        </label>
+        <label>
+          Min open interest
+          <input id="min-oi" type="number" min="0" max="5000" step="50" value="250" />
+        </label>
+        <label>
+          Max IV rank
+          <input id="max-iv" type="number" min="1" max="100" step="1" value="85" />
+        </label>
+        <label>
+          Direction
+          <select id="direction">
+            <option value="both">Calls + puts</option>
+            <option value="call">Calls only</option>
+            <option value="put">Puts only</option>
+          </select>
+        </label>
+        <label>
+          Watchlist
+          <input id="watchlist" type="text" value="SPY,QQQ,NVDA,AMD,AAPL,TSLA" />
+        </label>
+        <button id="scan-button" type="button">Scan Now</button>
+      </section>
+
+      <section class="dashboard">
+        <section class="main-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Ranked by edge</p>
+              <h2>Hot Plays</h2>
+            </div>
+            <p id="scan-summary">Ready</p>
+          </div>
+          <div class="cards" id="candidate-list"></div>
+        </section>
+
+        <aside class="side-panel">
+          <section>
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">Your book</p>
+                <h2>Accounts</h2>
+              </div>
+            </div>
+            <form id="account-form" class="mini-form">
+              <input id="account-name" type="text" placeholder="Account name" />
+              <select id="account-provider">
+                <option>Fidelity</option>
+                <option>Robinhood</option>
+                <option>Alpaca</option>
+                <option>Other</option>
+              </select>
+              <button type="submit">Add Account</button>
+            </form>
+            <div class="book-actions">
+              <button id="export-book" type="button">Export</button>
+              <label class="import-button">
+                Import
+                <input id="import-book" type="file" accept="application/json" />
+              </label>
+            </div>
+            <div id="account-list" class="account-list"></div>
+          </section>
+
+          <section>
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">Manual entry</p>
+                <h2>Positions & Plays</h2>
+              </div>
+            </div>
+            <form id="position-form" class="position-form">
+              <select id="position-account"></select>
+              <select id="position-kind">
+                <option value="option">Option</option>
+                <option value="stock">Stock / ETF</option>
+              </select>
+              <input id="position-symbol" type="text" placeholder="Symbol" />
+              <input id="position-detail" type="text" placeholder="Contract / notes" />
+              <input id="position-qty" type="number" step="0.01" placeholder="Qty" />
+              <input id="position-cost" type="number" step="0.01" placeholder="Avg cost" />
+              <button type="submit">Add Holding</button>
+            </form>
+            <div id="position-list" class="position-list"></div>
+          </section>
+
+          <section>
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">Accountability</p>
+                <h2>Spotlight Picks</h2>
+              </div>
+            </div>
+            <div id="spotlight-list" class="spotlight-list"></div>
+          </section>
+
+          <section>
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">Execution</p>
+                <h2>Paper Order Stage</h2>
+              </div>
+            </div>
+            <div id="order-stage" class="order-stage empty">No contract staged.</div>
+          </section>
+
+          <section>
+            <div class="section-heading compact">
+              <div>
+                <p class="eyebrow">Live Feed</p>
+                <h2>Massive Stream</h2>
+              </div>
+            </div>
+            <form id="stream-form" class="stream-form">
+              <input id="stream-symbol" type="text" value="SPY251219C00650000" placeholder="Option symbol" />
+              <select id="stream-feed">
+                <option value="Q">Quotes</option>
+                <option value="T">Trades</option>
+                <option value="FMV">FMV</option>
+              </select>
+              <select id="stream-mode">
+                <option value="delayed">Delayed</option>
+                <option value="realtime">Real-time</option>
+              </select>
+              <button id="stream-connect" type="submit">Connect</button>
+              <button id="stream-disconnect" type="button">Disconnect</button>
+            </form>
+            <div id="stream-status" class="stream-status empty">Not connected.</div>
+            <div id="stream-last" class="stream-last empty">No messages yet.</div>
+          </section>
+        </aside>
+      </section>
+    </main>
+    <script src="client.js"></script>
+  </body>
+</html>
